@@ -1,0 +1,16 @@
+[package]
+name = "raop_play"
+version = "0.0.0"
+authors = ["Linus Unnebäck <linus@folkdatorn.se>"]
+edition = "2018"
+
+build = "build.rs"
+
+[dependencies]
+docopt = "^1.0.0"
+log = "^0.4.1"
+openssl-sys = "^0.9.41"
+rand = "^0.6.5"
+serde = "^1.0.88"
+serde_derive = "^1.0.88"
+stderrlog = "^0.4.1"
