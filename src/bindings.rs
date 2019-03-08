@@ -15130,10 +15130,47 @@ fn bindgen_test_layout_aes_context() {
         )
     );
 }
+extern "C" {
+    #[link_name = "\u{1}_aes_set_key"]
+    pub fn aes_set_key(
+        ctx: *mut aes_context,
+        key: *mut ::std::os::raw::c_uchar,
+        nbits: ::std::os::raw::c_int,
+    ) -> ::std::os::raw::c_int;
+}
+extern "C" {
+    #[link_name = "\u{1}_aes_encrypt"]
+    pub fn aes_encrypt(
+        ctx: *mut aes_context,
+        input: *mut ::std::os::raw::c_uchar,
+        output: *mut ::std::os::raw::c_uchar,
+    );
+}
+extern "C" {
+    #[link_name = "\u{1}_aes_decrypt"]
+    pub fn aes_decrypt(
+        ctx: *mut aes_context,
+        input: *mut ::std::os::raw::c_uchar,
+        output: *mut ::std::os::raw::c_uchar,
+    );
+}
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct alac_codec_s {
     _unused: [u8; 0],
+}
+extern "C" {
+    #[link_name = "\u{1}_alac_delete_encoder"]
+    pub fn alac_delete_encoder(codec: *mut alac_codec_s);
+}
+extern "C" {
+    #[link_name = "\u{1}_alac_create_encoder"]
+    pub fn alac_create_encoder(
+        chunk_len: ::std::os::raw::c_int,
+        sampleRate: ::std::os::raw::c_int,
+        sampleSize: ::std::os::raw::c_int,
+        channels: ::std::os::raw::c_int,
+    ) -> *mut alac_codec_s;
 }
 #[repr(C)]
 #[derive(Copy, Clone)]

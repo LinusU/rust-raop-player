@@ -1,4 +1,4 @@
-use crate::bindings::{rtspcl_s, rtspcl_connect, rtspcl_disconnect, rtspcl_pair_verify, rtspcl_auth_setup, rtspcl_announce_sdp, rtspcl_setup, rtspcl_record, rtspcl_set_parameter, rtspcl_flush, rtspcl_remove_all_exthds, rtspcl_add_exthds, rtspcl_mark_del_exthds, rtspcl_local_ip, rtp_port_s, key_data_t};
+use crate::bindings::{rtspcl_s, rtspcl_create, rtspcl_connect, rtspcl_disconnect, rtspcl_pair_verify, rtspcl_auth_setup, rtspcl_announce_sdp, rtspcl_setup, rtspcl_record, rtspcl_set_parameter, rtspcl_flush, rtspcl_remove_all_exthds, rtspcl_add_exthds, rtspcl_mark_del_exthds, rtspcl_local_ip, rtspcl_destroy, rtp_port_s, key_data_t};
 
 use std::ffi::{CStr, CString};
 
@@ -9,17 +9,18 @@ pub struct RTSPClient {
 }
 
 impl RTSPClient {
+    pub fn new(user_agent: &str) -> Option<RTSPClient> {
+        let c_handle = unsafe { rtspcl_create(CString::new(user_agent).unwrap().into_raw()) };
+        if c_handle.is_null() { None } else { Some(RTSPClient { c_handle }) }
+    }
+
     pub fn from_c_handle(c_handle: *mut rtspcl_s) -> RTSPClient {
         RTSPClient { c_handle }
     }
 
-    // struct rtspcl_s *rtspcl_create(char* user_name);
-    // bool   			rtspcl_destroy(struct rtspcl_s *p);
-
     // bool rtspcl_set_useragent(struct rtspcl_s *p, const char *name);
 
     pub fn connect(&self, local: Ipv4Addr, host: Ipv4Addr, destport: u16, sid: &str) -> Result<(), Box<std::error::Error>> {
-        println!("CONNECTING!");
         let success = unsafe { rtspcl_connect(self.c_handle, local.into(), host.into(), destport, CString::new(sid).unwrap().into_raw()) };
         if success { Ok(()) } else { panic!("Failed to connect") }
     }
@@ -44,9 +45,7 @@ impl RTSPClient {
     }
 
     pub fn announce_sdp(&self, sdp: &str) -> Result<(), Box<std::error::Error>> {
-        println!("{}", sdp);
         let success = unsafe { rtspcl_announce_sdp(self.c_handle, CString::new(sdp).unwrap().into_raw()) };
-        println!("{}", success);
         if success { Ok(()) } else { panic!("Failed to announce sdp") }
     }
 
@@ -90,5 +89,11 @@ impl RTSPClient {
 
     pub fn local_ip(&self) -> Result<String, Box<std::error::Error>> {
         Ok(unsafe { CStr::from_ptr(rtspcl_local_ip(self.c_handle)).to_str()?.to_owned() })
+    }
+}
+
+impl Drop for RTSPClient {
+    fn drop(&mut self) {
+        unsafe { rtspcl_destroy(self.c_handle); }
     }
 }

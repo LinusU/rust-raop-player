@@ -23,6 +23,7 @@ use std::io;
 use std::fs::File;
 
 // Local dependencies
+mod alac_encoder;
 mod raop_client;
 mod rtsp_client;
 use crate::raop_client::{Codec, Crypto, RaopClient};
@@ -107,10 +108,10 @@ fn main() -> Result<(), Box<std::error::Error>> {
     let volume = RaopClient::float_volume(args.flag_v);
     let mut infile = open_file(args.arg_filename);
 
-    let mut raopcl = RaopClient::new(host, codec, MAX_SAMPLES_PER_CHUNK, args.flag_l, crypto, false, 44100, 16, 2, volume).unwrap();
+    let mut raopcl = RaopClient::new(host, codec, MAX_SAMPLES_PER_CHUNK, args.flag_l, crypto, false, None, None, None, 44100, 16, 2, volume, args.arg_server_ip, args.flag_p).unwrap();
 
     unsafe {
-        raopcl.connect(args.arg_server_ip, args.flag_p, true)?;
+        raopcl.connect(true)?;
 
         let latency = raopcl.latency();
 
