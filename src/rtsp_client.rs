@@ -14,10 +14,6 @@ impl RTSPClient {
         if c_handle.is_null() { None } else { Some(RTSPClient { c_handle }) }
     }
 
-    pub fn from_c_handle(c_handle: *mut rtspcl_s) -> RTSPClient {
-        RTSPClient { c_handle }
-    }
-
     // bool rtspcl_set_useragent(struct rtspcl_s *p, const char *name);
 
     pub fn connect(&self, local: Ipv4Addr, host: Ipv4Addr, destport: u16, sid: &str) -> Result<(), Box<std::error::Error>> {
