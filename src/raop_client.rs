@@ -424,78 +424,80 @@ impl RaopClient {
     }
 
     pub fn send_chunk(&self, sample: &mut [u8], frames: usize, playtime: &mut u64) -> Result<(), Box<std::error::Error>> {
-        unsafe {
-            let now = safe_get_ntp();
+        let now = safe_get_ntp();
 
-            trace!("[send_chunk] - aquiring status");
-            let mut status = self.status.lock().unwrap();
-            trace!("[send_chunk] - got status");
+        trace!("[send_chunk] - aquiring status");
+        let mut status = self.status.lock().unwrap();
+        trace!("[send_chunk] - got status");
 
-            /*
-            Move to streaming state only when really flushed. In most cases, this is
-            done by the raopcl_accept_frames function, except when a player takes too
-            long to flush (JBL OnBeat) and we have to "fake" accepting frames
-            */
-            if status.state == raop_states_s_RAOP_FLUSHED {
-                status.first_pkt = true;
-                info!("begining to stream (LATE) hts:{} n:{}.{}", status.head_ts, SEC(now), FRAC(now));
-                status.state = raop_states_s_RAOP_STREAMING;
+        /*
+        Move to streaming state only when really flushed. In most cases, this is
+        done by the raopcl_accept_frames function, except when a player takes too
+        long to flush (JBL OnBeat) and we have to "fake" accepting frames
+        */
+        if status.state == raop_states_s_RAOP_FLUSHED {
+            status.first_pkt = true;
+            info!("begining to stream (LATE) hts:{} n:{}.{}", status.head_ts, SEC(now), FRAC(now));
+            status.state = raop_states_s_RAOP_STREAMING;
 
-                trace!("[send_chunk] - aquiring ctrl socket");
-                let socket_lock = self.rtp_ctrl.lock().unwrap();
-                let socket = socket_lock.as_ref().unwrap();
-                trace!("[send_chunk] - got ctrl socket");
-                trace!("[send_chunk] - aquiring latency_frames");
-                let latency_frames = self.latency_frames.lock().unwrap();
-                trace!("[send_chunk] - got latency_frames");
-                _send_sync(&socket, &mut status, self.sample_rate, *latency_frames, true)?;
-                trace!("[send_chunk] - dropping latency_frames");
-                trace!("[send_chunk] - dropping ctrl socket");
-            }
+            trace!("[send_chunk] - aquiring ctrl socket");
+            let socket_lock = self.rtp_ctrl.lock().unwrap();
+            let socket = socket_lock.as_ref().unwrap();
+            trace!("[send_chunk] - got ctrl socket");
+            trace!("[send_chunk] - aquiring latency_frames");
+            let latency_frames = self.latency_frames.lock().unwrap();
+            trace!("[send_chunk] - got latency_frames");
+            _send_sync(&socket, &mut status, self.sample_rate, *latency_frames, true)?;
+            trace!("[send_chunk] - dropping latency_frames");
+            trace!("[send_chunk] - dropping ctrl socket");
+        }
 
-            let mut encoded: *mut u8 = ptr::null_mut();
-            let mut size: i32 = 0;
+        let mut encoded: *mut u8 = ptr::null_mut();
+        let mut size: i32 = 0;
 
-            match self.codec {
-                Codec::ALAC => {
-                    let alac_codec = self.alac_codec.lock().unwrap();
-                    alac_codec.as_ref().unwrap().encode_chunk(sample, frames, &mut encoded, &mut size);
-                },
-                Codec::ALACRaw => {
-                    pcm_to_alac_raw(&mut (*sample)[0], frames as i32, &mut encoded, &mut size, self.chunk_length as i32);
-                },
-                Codec::PCM => {
-                    size = (frames * 4) as i32;
-                    encoded = malloc(frames * 4) as *mut u8;
-                    for offset in (0..(size as usize)).step_by(4) {
+        match self.codec {
+            Codec::ALAC => {
+                let alac_codec = self.alac_codec.lock().unwrap();
+                alac_codec.as_ref().unwrap().encode_chunk(sample, frames, &mut encoded, &mut size);
+            },
+            Codec::ALACRaw => {
+                unsafe { pcm_to_alac_raw(&mut (*sample)[0], frames as i32, &mut encoded, &mut size, self.chunk_length as i32); }
+            },
+            Codec::PCM => {
+                size = (frames * 4) as i32;
+                encoded = unsafe { malloc(frames * 4) as *mut u8 };
+                for offset in (0..(size as usize)).step_by(4) {
+                    unsafe {
                         *encoded.offset((offset + 0) as isize) = sample[offset + 1];
                         *encoded.offset((offset + 1) as isize) = sample[offset + 0];
                         *encoded.offset((offset + 2) as isize) = sample[offset + 3];
                         *encoded.offset((offset + 3) as isize) = sample[offset + 2];
                     }
                 }
-                _ => {
-                    panic!("Not implemented");
-                }
             }
-
-            let buffer = malloc(size_of::<rtp_header_t>() + size_of::<rtp_audio_pkt_t>() + size as usize) as *mut u8;
-
-            if buffer.is_null() {
-                free(encoded as *mut std::ffi::c_void);
-                error!("cannot allocate buffer");
-                panic!("Cannot allocate buffer");
+            _ => {
+                panic!("Not implemented");
             }
+        }
 
-            *playtime = TS2NTP(status.head_ts + self.latency() as u64, self.sample_rate);
+        let buffer = unsafe { malloc(size_of::<rtp_header_t>() + size_of::<rtp_audio_pkt_t>() + size as usize) as *mut u8 };
 
-            trace!("sending audio ts:{} (pt:{}.{} now:{}) ", status.head_ts, SEC(*playtime), FRAC(*playtime), safe_get_ntp());
+        if buffer.is_null() {
+            unsafe { free(encoded as *mut std::ffi::c_void); }
+            error!("cannot allocate buffer");
+            panic!("Cannot allocate buffer");
+        }
 
-            status.seq_number = status.seq_number.wrapping_add(1);
+        *playtime = TS2NTP(status.head_ts + self.latency() as u64, self.sample_rate);
 
-            // packet is after re-transmit header
-            // packet = (rtp_audio_pkt_t *) (buffer + sizeof(rtp_header_t));
-            let packet = buffer.offset(size_of::<rtp_header_t>() as isize) as *mut rtp_audio_pkt_t;
+        trace!("sending audio ts:{} (pt:{}.{} now:{}) ", status.head_ts, SEC(*playtime), FRAC(*playtime), safe_get_ntp());
+
+        status.seq_number = status.seq_number.wrapping_add(1);
+
+        // packet is after re-transmit header
+        let packet: *mut rtp_audio_pkt_t;
+        unsafe {
+            packet = buffer.offset(size_of::<rtp_header_t>() as isize) as *mut rtp_audio_pkt_t;
             (*packet).hdr.proto = 0x80;
             (*packet).hdr.type_ = 0x60 | (if status.first_pkt { 0x80 } else { 0 });
             status.first_pkt = false;
@@ -505,36 +507,36 @@ impl RaopClient {
             (*packet).ssrc = (*self.ssrc.lock().unwrap() as u32).to_be();
 
             buffer.offset((size_of::<rtp_header_t>() + size_of::<rtp_audio_pkt_t>()) as isize).copy_from(encoded, size as usize);
-
-            // with newer airport express, don't use encryption (??)
-            if self.crypto != Crypto::Clear {
-                panic!("Not implemented");
-                // raopcl_encrypt(p, (u8_t*) packet + sizeof(rtp_audio_pkt_t), size);
-            }
-
-            let n = (status.seq_number % MAX_BACKLOG) as usize;
-            status.backlog[n].seq_number = status.seq_number;
-            status.backlog[n].timestamp = status.head_ts;
-            if !status.backlog[n].buffer.is_null() { free(status.backlog[n].buffer as *mut std::ffi::c_void); }
-            status.backlog[n].buffer = buffer;
-            status.backlog[n].size = (size_of::<rtp_audio_pkt_t>() as i32) + size;
-
-            status.head_ts += self.chunk_length as u64;
-
-            self._send_audio(&mut status, packet, size_of::<rtp_audio_pkt_t>() + (size as usize))?;
-
-            if NTP2MS(*playtime) % 10000 < 8 {
-                let sane = *self.sane.lock().unwrap();
-                let retransmit = *self.retransmit.lock().unwrap();
-                info!("check n:{} p:{} ts:{} sn:{}\n               retr: {}, avail: {}, send: {}, select: {})",
-                    MSEC(now), MSEC(*playtime), status.head_ts, status.seq_number,
-                    retransmit, sane.audio.avail, sane.audio.send, sane.audio.select);
-            }
-
-            free(encoded as *mut std::ffi::c_void);
-
-            trace!("[send_chunk] - dropping status");
         }
+
+        // with newer airport express, don't use encryption (??)
+        if self.crypto != Crypto::Clear {
+            panic!("Not implemented");
+            // raopcl_encrypt(p, (u8_t*) packet + sizeof(rtp_audio_pkt_t), size);
+        }
+
+        let n = (status.seq_number % MAX_BACKLOG) as usize;
+        status.backlog[n].seq_number = status.seq_number;
+        status.backlog[n].timestamp = status.head_ts;
+        if !status.backlog[n].buffer.is_null() { unsafe { free(status.backlog[n].buffer as *mut std::ffi::c_void); } }
+        status.backlog[n].buffer = buffer;
+        status.backlog[n].size = (size_of::<rtp_audio_pkt_t>() as i32) + size;
+
+        status.head_ts += self.chunk_length as u64;
+
+        self._send_audio(&mut status, packet, size_of::<rtp_audio_pkt_t>() + (size as usize))?;
+
+        if NTP2MS(*playtime) % 10000 < 8 {
+            let sane = *self.sane.lock().unwrap();
+            let retransmit = *self.retransmit.lock().unwrap();
+            info!("check n:{} p:{} ts:{} sn:{}\n               retr: {}, avail: {}, send: {}, select: {})",
+                MSEC(now), MSEC(*playtime), status.head_ts, status.seq_number,
+                retransmit, sane.audio.avail, sane.audio.send, sane.audio.select);
+        }
+
+        unsafe { free(encoded as *mut std::ffi::c_void); }
+
+        trace!("[send_chunk] - dropping status");
 
         Ok(())
     }
@@ -616,39 +618,37 @@ impl RaopClient {
     }
 
     pub fn analyse_setup(&self, setup_kd: &mut [key_data_t]) -> Result<(u16, u16, u16), Box<std::error::Error>> {
-        unsafe {
-            // get transport (port ...) info
-            let transport_header = kd_lookup(&mut setup_kd[0], CString::new("Transport").unwrap().into_raw());
+        // get transport (port ...) info
+        let transport_header = unsafe { kd_lookup(&mut setup_kd[0], CString::new("Transport").unwrap().into_raw()) };
 
-            if transport_header.is_null() {
-                error!("no transport in response");
-                panic!("no transport in response");
-            }
-
-            let mut audio_port: u16 = 0;
-            let mut ctrl_port: u16 = 0;
-            let mut time_port: u16 = 0;
-
-            for token in CStr::from_ptr(transport_header).to_str()?.split(';') {
-                match token.split('=').collect::<Vec<&str>>().as_slice() {
-                    ["server_port", port] => audio_port = port.parse()?,
-                    ["control_port", port] => ctrl_port = port.parse()?,
-                    ["timing_port", port] => time_port = port.parse()?,
-                    _ => {},
-                }
-            }
-
-            if audio_port == 0 || ctrl_port == 0 {
-                error!("missing a RTP port in response");
-                panic!("missing a RTP port in response");
-            }
-
-            if time_port == 0 {
-                info!("missing timing port, will get it later");
-            }
-
-            Ok((audio_port, ctrl_port, time_port))
+        if transport_header.is_null() {
+            error!("no transport in response");
+            panic!("no transport in response");
         }
+
+        let mut audio_port: u16 = 0;
+        let mut ctrl_port: u16 = 0;
+        let mut time_port: u16 = 0;
+
+        for token in unsafe { CStr::from_ptr(transport_header) }.to_str()?.split(';') {
+            match token.split('=').collect::<Vec<&str>>().as_slice() {
+                ["server_port", port] => audio_port = port.parse()?,
+                ["control_port", port] => ctrl_port = port.parse()?,
+                ["timing_port", port] => time_port = port.parse()?,
+                _ => {},
+            }
+        }
+
+        if audio_port == 0 || ctrl_port == 0 {
+            error!("missing a RTP port in response");
+            panic!("missing a RTP port in response");
+        }
+
+        if time_port == 0 {
+            info!("missing timing port, will get it later");
+        }
+
+        Ok((audio_port, ctrl_port, time_port))
     }
 
     pub fn connect(&mut self, set_volume: bool) -> Result<(), Box<std::error::Error>> {
@@ -834,45 +834,43 @@ impl RaopClient {
     }
 
     fn _send_audio(&self, status: &mut Status, packet: *mut rtp_audio_pkt_t, size: usize) -> Result<bool, Box<std::error::Error>> {
-        unsafe {
-            /*
-            Do not send if audio port closed or we are not yet in streaming state. We
-            might be just waiting for flush to happen in the case of a device taking a
-            lot of time to connect, so avoid disturbing it with frames. Still, for sync
-            reasons or when a starting time has been set, it's normal that the caller
-            uses raopcld_accept_frames() and tries to send frames even before the
-            connect has returned in case of multi-threaded application
-            */
-            // FIXME: if self.rtp_ports.audio.fd == -1  { return Ok(false); }
-            if status.state != raop_states_s_RAOP_STREAMING { return Ok(false); }
+        /*
+        Do not send if audio port closed or we are not yet in streaming state. We
+        might be just waiting for flush to happen in the case of a device taking a
+        lot of time to connect, so avoid disturbing it with frames. Still, for sync
+        reasons or when a starting time has been set, it's normal that the caller
+        uses raopcld_accept_frames() and tries to send frames even before the
+        connect has returned in case of multi-threaded application
+        */
+        // FIXME: if self.rtp_ports.audio.fd == -1  { return Ok(false); }
+        if status.state != raop_states_s_RAOP_STREAMING { return Ok(false); }
 
-            /*
-            The audio socket is non blocking, so we can can wait socket availability
-            but not too much. Half of the packet size if a good value. There is the
-            backlog buffer to re-send packets if needed, so nothign is lost
+        /*
+        The audio socket is non blocking, so we can can wait socket availability
+        but not too much. Half of the packet size if a good value. There is the
+        backlog buffer to re-send packets if needed, so nothign is lost
 
-            FIXME: This is no longer implemented :(
-            */
-            let socket = self.rtp_audio.lock().unwrap();
-            let n = socket.as_ref().unwrap().send(any_as_u8_slice_len(&*packet, size)).unwrap();
-            drop(socket);
+        FIXME: This is no longer implemented :(
+        */
+        let socket = self.rtp_audio.lock().unwrap();
+        let n = socket.as_ref().unwrap().send(unsafe { any_as_u8_slice_len(&*packet, size) }).unwrap();
+        drop(socket);
 
-            let mut ret = true;
+        let mut ret = true;
 
-            {
-                let mut sane = self.sane.lock().unwrap();
+        {
+            let mut sane = self.sane.lock().unwrap();
 
-                if n != size {
-                    debug!("error sending audio packet");
-                    ret = false;
-                    sane.audio.send += 1;
-                } else {
-                    sane.audio.send = 0;
-                }
+            if n != size {
+                debug!("error sending audio packet");
+                ret = false;
+                sane.audio.send += 1;
+            } else {
+                sane.audio.send = 0;
             }
-
-            Ok(ret)
         }
+
+        Ok(ret)
     }
 
     fn _terminate_rtp(&self) -> Result<(), Box<std::error::Error>> {
@@ -905,38 +903,36 @@ impl Drop for RaopClient {
 }
 
 fn _send_sync(socket: &UdpSocket, status: &mut Status, sample_rate: u32, latency_frames: u32, first: bool) -> Result<(), Box<std::error::Error>> {
-    unsafe {
-        // do not send timesync on FLUSHED
-        if status.state != raop_states_s_RAOP_STREAMING { return Ok(()); }
+    // do not send timesync on FLUSHED
+    if status.state != raop_states_s_RAOP_STREAMING { return Ok(()); }
 
-        let timestamp = status.head_ts;
-        let now = TS2NTP(timestamp, sample_rate);
+    let timestamp = status.head_ts;
+    let now = TS2NTP(timestamp, sample_rate);
 
-        let rsp = rtp_sync_pkt_t {
-            hdr: rtp_header_t {
-                proto: 0x80 | if first { 0x10 } else { 0x00 },
-                type_: 0x54 | 0x80,
-                // seems that seq=7 shall be forced
-                seq: [0, 7],
-            },
+    let rsp = rtp_sync_pkt_t {
+        hdr: rtp_header_t {
+            proto: 0x80 | if first { 0x10 } else { 0x00 },
+            type_: 0x54 | 0x80,
+            // seems that seq=7 shall be forced
+            seq: [0, 7],
+        },
 
-            // set the NTP time in network order
-            curr_time: ntp_t {
-                seconds: SEC(now).to_be(),
-                fraction: FRAC(now).to_be(),
-            },
+        // set the NTP time in network order
+        curr_time: ntp_t {
+            seconds: SEC(now).to_be(),
+            fraction: FRAC(now).to_be(),
+        },
 
-            // The DAC time is synchronized with gettime_ms(), minus the latency.
-            rtp_timestamp: (timestamp as u32).to_be(),
-            rtp_timestamp_latency: ((timestamp - latency_frames as u64) as u32).to_be(),
-        };
+        // The DAC time is synchronized with gettime_ms(), minus the latency.
+        rtp_timestamp: (timestamp as u32).to_be(),
+        rtp_timestamp_latency: ((timestamp - latency_frames as u64) as u32).to_be(),
+    };
 
-        let n = socket.send(any_as_u8_slice(&rsp))?;
+    let n = socket.send(unsafe { any_as_u8_slice(&rsp) })?;
 
-        debug!("sync ntp:{}.{} (ts:{})", SEC(now), FRAC(now), status.head_ts);
+    debug!("sync ntp:{}.{} (ts:{})", SEC(now), FRAC(now), status.head_ts);
 
-        if n == 0 { info!("write, disconnected on the other end"); }
-    }
+    if n == 0 { info!("write, disconnected on the other end"); }
 
     Ok(())
 }
