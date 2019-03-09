@@ -98,7 +98,8 @@ struct Status {
     backlog: [raopcl_s__bindgen_ty_2; 512usize],
 }
 
-#[derive(Clone)]
+unsafe impl Send for Status {}
+
 pub struct RaopClient {
     // Immutable copied properties
     remote_addr: Ipv4Addr,
@@ -272,7 +273,7 @@ impl RaopClient {
     }
 
     pub fn is_playing(&self) -> bool {
-        let now_ts = NTP2TS(safe_get_ntp(), self.sample_rate());
+        let now_ts = NTP2TS(safe_get_ntp(), self.sample_rate);
         trace!("[is_playing] - aquiring status");
         let status = self.status.lock().unwrap();
         trace!("[is_playing] - got status");
@@ -293,7 +294,7 @@ impl RaopClient {
         if status.flushing {
             let now = safe_get_ntp();
 
-            now_ts = NTP2TS(now, self.sample_rate());
+            now_ts = NTP2TS(now, self.sample_rate);
 
             // Not flushed yet, but we have time to wait, so pretend we are full
             if status.state != raop_states_s_RAOP_FLUSHED && (!status.start_ts > 0 || status.start_ts > now_ts + self.latency() as u64) {
@@ -312,7 +313,20 @@ impl RaopClient {
             if status.pause_ts == 0 {
                 status.head_ts = if status.start_ts > 0 { status.start_ts } else { now_ts };
                 status.first_ts = status.head_ts;
-                if first_pkt { self._send_sync(&mut status, true)?; }
+
+                if first_pkt {
+                    trace!("[accept_frames] - aquiring ctrl socket");
+                    let socket_lock = self.rtp_ctrl.lock().unwrap();
+                    let socket = socket_lock.as_ref().unwrap();
+                    trace!("[accept_frames] - got ctrl socket");
+                    trace!("[accept_frames] - aquiring latency_frames");
+                    let latency_frames = self.latency_frames.lock().unwrap();
+                    trace!("[accept_frames] - got latency_frames");
+                    _send_sync(&socket, &mut status, self.sample_rate, *latency_frames, true)?;
+                    trace!("[accept_frames] - dropping latency_frames");
+                    trace!("[accept_frames] - dropping ctrl socket");
+                }
+
                 info!("restarting w/o pause n:{}.{}, hts:{}", SEC(now), FRAC(now), status.head_ts);
             } else {
                 let mut n: u16;
@@ -325,7 +339,18 @@ impl RaopClient {
                 // last head_ts shall be first + raopcl_latency - chunk_length
                 status.head_ts = status.first_ts - self.chunk_length as u64;
 
-                if first_pkt { self._send_sync(&mut status, true)?; }
+                if first_pkt {
+                    trace!("[accept_frames] - aquiring ctrl socket");
+                    let socket_lock = self.rtp_ctrl.lock().unwrap();
+                    let socket = socket_lock.as_ref().unwrap();
+                    trace!("[accept_frames] - got ctrl socket");
+                    trace!("[accept_frames] - aquiring latency_frames");
+                    let latency_frames = self.latency_frames.lock().unwrap();
+                    trace!("[accept_frames] - got latency_frames");
+                    _send_sync(&socket, &mut status, self.sample_rate, *latency_frames, true)?;
+                    trace!("[accept_frames] - dropping latency_frames");
+                    trace!("[accept_frames] - dropping ctrl socket");
+                }
 
                 info!("restarting w/ pause n:{}.{}, hts:{} (re-send: {})", SEC(now), FRAC(now), status.head_ts, chunks);
 
@@ -389,7 +414,7 @@ impl RaopClient {
         if status.pause_ts > 0 {
             now_ts = status.pause_ts;
         } else {
-            now_ts = NTP2TS(safe_get_ntp(), self.sample_rate());
+            now_ts = NTP2TS(safe_get_ntp(), self.sample_rate);
         }
 
         let accept = now_ts >= status.head_ts + (self.chunk_length as u64);
@@ -415,7 +440,17 @@ impl RaopClient {
                 status.first_pkt = true;
                 info!("begining to stream (LATE) hts:{} n:{}.{}", status.head_ts, SEC(now), FRAC(now));
                 status.state = raop_states_s_RAOP_STREAMING;
-                self._send_sync(&mut status, true)?;
+
+                trace!("[send_chunk] - aquiring ctrl socket");
+                let socket_lock = self.rtp_ctrl.lock().unwrap();
+                let socket = socket_lock.as_ref().unwrap();
+                trace!("[send_chunk] - got ctrl socket");
+                trace!("[send_chunk] - aquiring latency_frames");
+                let latency_frames = self.latency_frames.lock().unwrap();
+                trace!("[send_chunk] - got latency_frames");
+                _send_sync(&socket, &mut status, self.sample_rate, *latency_frames, true)?;
+                trace!("[send_chunk] - dropping latency_frames");
+                trace!("[send_chunk] - dropping ctrl socket");
             }
 
             let mut encoded: *mut u8 = ptr::null_mut();
@@ -452,7 +487,7 @@ impl RaopClient {
                 panic!("Cannot allocate buffer");
             }
 
-            *playtime = TS2NTP(status.head_ts + self.latency() as u64, self.sample_rate());
+            *playtime = TS2NTP(status.head_ts + self.latency() as u64, self.sample_rate);
 
             trace!("sending audio ts:{} (pt:{}.{} now:{}) ", status.head_ts, SEC(*playtime), FRAC(*playtime), safe_get_ntp());
 
@@ -527,7 +562,7 @@ impl RaopClient {
                     self.chunk_length,
                     self.sample_size,
                     self.channels,
-                    self.sample_rate(),
+                    self.sample_rate,
                 ).as_str());
             },
             Codec::ALAC => {
@@ -536,14 +571,14 @@ impl RaopClient {
                     self.chunk_length,
                     self.sample_size,
                     self.channels,
-                    self.sample_rate(),
+                    self.sample_rate,
                 ).as_str());
             },
             Codec::PCM => {
                 sdp.push_str(format!(
                     "m=audio 0 RTP/AVP 96\r\na=rtpmap:96 L{}/{}/{}\r\n",
                     self.sample_size,
-                    self.sample_rate(),
+                    self.sample_rate,
                     self.channels,
                 ).as_str());
             },
@@ -730,7 +765,7 @@ impl RaopClient {
 
             {
                 let status = self.status.lock().unwrap();
-                rtsp_client.record(status.seq_number + 1, NTP2TS(safe_get_ntp(), self.sample_rate()) as u32, &mut kd)?;
+                rtsp_client.record(status.seq_number + 1, NTP2TS(safe_get_ntp(), self.sample_rate) as u32, &mut kd)?;
             }
         }
 
@@ -748,9 +783,16 @@ impl RaopClient {
         }
 
         {
-            let client = self.clone();
+            let running = Arc::clone(&self.ctrl_running);
+            let socket_mutex = Arc::clone(&self.rtp_ctrl);
+            let status_mutex = Arc::clone(&self.status);
+            let sane_mutex = Arc::clone(&self.sane);
+            let retransmit_mutex = Arc::clone(&self.retransmit);
+            let latency_frames_mutex = Arc::clone(&self.latency_frames);
+            let sample_rate = self.sample_rate;
+
             self.ctrl_running.store(true, Ordering::Relaxed);
-            *self.ctrl_thread.lock().unwrap() = Some(thread::spawn(move || { _rtp_control_thread(client); }));
+            *self.ctrl_thread.lock().unwrap() = Some(thread::spawn(move || { _rtp_control_thread(running, socket_mutex, status_mutex, sane_mutex, retransmit_mutex, latency_frames_mutex, sample_rate); }));
         }
 
         {
@@ -789,48 +831,6 @@ impl RaopClient {
 
     pub fn disconnect(&self) -> Result<(), Box<std::error::Error>> {
         self._disconnect(false)
-    }
-
-    fn _send_sync(&self, status: &mut Status, first: bool) -> Result<(), Box<std::error::Error>> {
-        unsafe {
-            // do not send timesync on FLUSHED
-            if status.state != raop_states_s_RAOP_STREAMING { return Ok(()); }
-
-            let timestamp = status.head_ts;
-            let now = TS2NTP(timestamp, self.sample_rate);
-
-            let rsp = rtp_sync_pkt_t {
-                hdr: rtp_header_t {
-                    proto: 0x80 | if first { 0x10 } else { 0x00 },
-                    type_: 0x54 | 0x80,
-                    // seems that seq=7 shall be forced
-                    seq: [0, 7],
-                },
-
-                // set the NTP time in network order
-                curr_time: ntp_t {
-                    seconds: SEC(now).to_be(),
-                    fraction: FRAC(now).to_be(),
-                },
-
-                // The DAC time is synchronized with gettime_ms(), minus the latency.
-                rtp_timestamp: (timestamp as u32).to_be(),
-                rtp_timestamp_latency: ((timestamp - (*self.latency_frames.lock().unwrap() as u64)) as u32).to_be(),
-            };
-
-            trace!("[_send_sync] - aquiring ctrl socket");
-            let socket = self.rtp_ctrl.lock().unwrap();
-            trace!("[_send_sync] - got ctrl socket");
-            let n = socket.as_ref().unwrap().send(any_as_u8_slice(&rsp))?;
-            drop(socket);
-            trace!("[_send_sync] - dropping ctrl socket");
-
-            debug!("sync ntp:{}.{} (ts:{})", SEC(now), FRAC(now), status.head_ts);
-
-            if n == 0 { info!("write, disconnected on the other end"); }
-        }
-
-        Ok(())
     }
 
     fn _send_audio(&self, status: &mut Status, packet: *mut rtp_audio_pkt_t, size: usize) -> Result<bool, Box<std::error::Error>> {
@@ -890,17 +890,55 @@ impl RaopClient {
     }
 }
 
-impl Drop for RaopClient {
+impl Drop for Status {
     fn drop(&mut self) {
-        unsafe {
-            self.disconnect().unwrap();
-
-            let status = self.status.lock().unwrap();
-            for i in 0..MAX_BACKLOG {
-                free(status.backlog[i as usize].buffer as *mut std::ffi::c_void);
-            }
+        for item in self.backlog.iter() {
+            unsafe { free(item.buffer as *mut std::ffi::c_void); }
         }
     }
+}
+
+impl Drop for RaopClient {
+    fn drop(&mut self) {
+        self.disconnect().unwrap();
+    }
+}
+
+fn _send_sync(socket: &UdpSocket, status: &mut Status, sample_rate: u32, latency_frames: u32, first: bool) -> Result<(), Box<std::error::Error>> {
+    unsafe {
+        // do not send timesync on FLUSHED
+        if status.state != raop_states_s_RAOP_STREAMING { return Ok(()); }
+
+        let timestamp = status.head_ts;
+        let now = TS2NTP(timestamp, sample_rate);
+
+        let rsp = rtp_sync_pkt_t {
+            hdr: rtp_header_t {
+                proto: 0x80 | if first { 0x10 } else { 0x00 },
+                type_: 0x54 | 0x80,
+                // seems that seq=7 shall be forced
+                seq: [0, 7],
+            },
+
+            // set the NTP time in network order
+            curr_time: ntp_t {
+                seconds: SEC(now).to_be(),
+                fraction: FRAC(now).to_be(),
+            },
+
+            // The DAC time is synchronized with gettime_ms(), minus the latency.
+            rtp_timestamp: (timestamp as u32).to_be(),
+            rtp_timestamp_latency: ((timestamp - latency_frames as u64) as u32).to_be(),
+        };
+
+        let n = socket.send(any_as_u8_slice(&rsp))?;
+
+        debug!("sync ntp:{}.{} (ts:{})", SEC(now), FRAC(now), status.head_ts);
+
+        if n == 0 { info!("write, disconnected on the other end"); }
+    }
+
+    Ok(())
 }
 
 #[repr(C, packed)]
@@ -929,7 +967,7 @@ impl rtp_time_pkt_t {
     }
 }
 
-extern fn _rtp_timing_thread(running: Arc<AtomicBool>, socket: Arc<Mutex<Option<UdpSocket>>>) {
+fn _rtp_timing_thread(running: Arc<AtomicBool>, socket: Arc<Mutex<Option<UdpSocket>>>) {
     // FIXME: this should come from the UdpSocket
     let mut connected = false;
 
@@ -985,7 +1023,7 @@ extern fn _rtp_timing_thread(running: Arc<AtomicBool>, socket: Arc<Mutex<Option<
             continue;
         }
 
-        thread::sleep(::std::time::Duration::from_secs(1));
+        thread::sleep(::std::time::Duration::from_millis(20));
     }
 }
 
@@ -1011,19 +1049,18 @@ impl rtp_lost_pkt_t {
     }
 }
 
-// extern fn _rtp_control_thread(running: Arc<AtomicBool>, socket: Arc<Mutex<Option<UdpSocket>>>, sane: Arc<Mutex<raopcl_s__bindgen_ty_1>>) {
-extern fn _rtp_control_thread(client: RaopClient) {
+fn _rtp_control_thread(running: Arc<AtomicBool>, socket_mutex: Arc<Mutex<Option<UdpSocket>>>, status_mutex: Arc<Mutex<Status>>, sane_mutex: Arc<Mutex<raopcl_s__bindgen_ty_1>>, retransmit_mutex: Arc<Mutex<u32>>, latency_frames_mutex: Arc<Mutex<u32>>, sample_rate: u32) {
     // NOTE: socket _must_ be connected here
     {
-        (*client.rtp_ctrl.lock().unwrap()).as_ref().unwrap().set_nonblocking(true).unwrap();
+        (socket_mutex.lock().unwrap()).as_ref().unwrap().set_nonblocking(true).unwrap();
     }
 
     // Reuse this memory for receiving packet
     let mut lost = rtp_lost_pkt_t::new();
 
-    while client.ctrl_running.load(Ordering::Relaxed) {
+    while running.load(Ordering::Relaxed) {
         trace!("[_rtp_control_thread] - aquiring ctrl socket");
-        let socket_lock = client.rtp_ctrl.lock().unwrap();
+        let socket_lock = socket_mutex.lock().unwrap();
         let socket = socket_lock.as_ref().unwrap();
         trace!("[_rtp_control_thread] - got ctrl socket");
 
@@ -1040,7 +1077,7 @@ extern fn _rtp_control_thread(client: RaopClient) {
             lost.n = u16::from_be(lost.n);
 
             {
-                let mut sane = client.sane.lock().unwrap();
+                let mut sane = sane_mutex.lock().unwrap();
 
                 if n != size_of::<rtp_lost_pkt_t>() {
                     error!("error in received request sn:{} n:{} (recv:{})", unsafe { lost.seq_number }, unsafe { lost.n }, n);
@@ -1054,7 +1091,7 @@ extern fn _rtp_control_thread(client: RaopClient) {
 
             let mut missed: i32 = 0;
             if lost.n > 0 {
-                let status = client.status.lock().unwrap();
+                let status = status_mutex.lock().unwrap();
 
                 for i in 0..lost.n {
                     let index = ((lost.seq_number + i) % MAX_BACKLOG) as usize;
@@ -1075,7 +1112,7 @@ extern fn _rtp_control_thread(client: RaopClient) {
                             (*hdr).seq[1] = 1;
                         }
 
-                        *client.retransmit.lock().unwrap() += 1;
+                        *retransmit_mutex.lock().unwrap() += 1;
 
                         socket.send(unsafe { any_as_u8_slice_len(&*hdr, size_of::<rtp_header_t>() + status.backlog[index].size as usize) }).unwrap();
                     } else {
@@ -1089,17 +1126,21 @@ extern fn _rtp_control_thread(client: RaopClient) {
             continue;
         }
 
+        {
+            trace!("[_rtp_control_thread] - aquiring status");
+            let mut status = status_mutex.lock().unwrap();
+            trace!("[_rtp_control_thread] - got status");
+            trace!("[_rtp_control_thread] - aquiring latency_frames");
+            let latency_frames = latency_frames_mutex.lock().unwrap();
+            trace!("[_rtp_control_thread] - got latency_frames");
+            _send_sync(&socket, &mut status, sample_rate, *latency_frames, false).unwrap();
+            trace!("[_rtp_control_thread] - dropping latency_frames");
+            trace!("[_rtp_control_thread] - dropping status");
+        }
+
         drop(socket);
         drop(socket_lock);
         trace!("[_rtp_control_thread] - dropping socket");
-
-        {
-            trace!("[_rtp_control_thread] - aquiring status");
-            let mut status = client.status.lock().unwrap();
-            trace!("[_rtp_control_thread] - got status");
-            client._send_sync(&mut status, false).unwrap();
-            trace!("[_rtp_control_thread] - dropping status");
-        }
 
         thread::sleep(std::time::Duration::from_secs(1));
     }

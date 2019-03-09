@@ -141,14 +141,13 @@ fn main() -> Result<(), Box<std::error::Error>> {
 
             if status == Status::Playing && raopcl.accept_frames()? {
                 let n = infile.read(&mut buf).unwrap();
+                if n == 0 { break }
                 raopcl.send_chunk(&mut buf, n / 4, &mut playtime)?;
                 frames += (n / 4) as u64;
             }
 
             if !raopcl.is_playing() { break }
         }
-
-        raopcl.disconnect()?;
     }
 
     Ok(())
