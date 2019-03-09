@@ -829,10 +829,6 @@ impl RaopClient {
         Ok(())
     }
 
-    pub fn disconnect(&self) -> Result<(), Box<std::error::Error>> {
-        self._disconnect(false)
-    }
-
     fn _send_audio(&self, status: &mut Status, packet: *mut rtp_audio_pkt_t, size: usize) -> Result<bool, Box<std::error::Error>> {
         /*
         Do not send if audio port closed or we are not yet in streaming state. We
@@ -898,7 +894,7 @@ impl Drop for Status {
 
 impl Drop for RaopClient {
     fn drop(&mut self) {
-        self.disconnect().unwrap();
+        self._disconnect(false).unwrap();
     }
 }
 
