@@ -101,7 +101,7 @@ struct Status {
 unsafe impl Send for Status {}
 
 pub struct RaopClient {
-    // Immutable copied properties
+    // Immutable properties
     remote_addr: Ipv4Addr,
     local_addr: Ipv4Addr,
     rtsp_port: u16,
@@ -117,9 +117,8 @@ pub struct RaopClient {
     crypto: Crypto,
     meta_data_capabilities: MetaDataCapabilities,
 
-    // Immutable shared properties
-    secret: Rc<Option<String>>,
-    et: Rc<Option<String>>,
+    secret: Option<String>,
+    et: Option<String>,
 
     // Mutable properties
     rtp_time: Arc<Mutex<Option<UdpSocket>>>,
@@ -198,7 +197,7 @@ impl RaopClient {
         unsafe { aes_set_key(&mut ctx, &mut key[0], 128); }
 
         Some(RaopClient {
-            // Immutable copied properties
+            // Immutable properties
             remote_addr,
             local_addr,
             rtsp_port,
@@ -210,10 +209,8 @@ impl RaopClient {
             codec,
             crypto,
             meta_data_capabilities,
-
-            // Immutable shared properties
-            secret: Rc::new(secret),
-            et: Rc::new(et),
+            secret,
+            et,
 
             // Mutable properties
             rtp_time: Arc::new(Mutex::new(None)),
@@ -695,15 +692,14 @@ impl RaopClient {
             info!("local interface {}", rtsp_client.local_ip()?);
 
             // RTSP pairing verify for AppleTV
-            if self.secret.is_some() {
-                // FIXME: convert self.c_handle.secret to &str
-                // rtsp_client.pair_verify(CStr::from_ptr(&(*self.c_handle).secret).to_str()?)?
-                panic!("Not implemented");
+            if let Some(ref secret) = self.secret {
+                rtsp_client.pair_verify(secret)?;
             }
 
             // Send pubkey for MFi devices
-            // FIXME:
-            // if (strchr((*self.c_handle).et, '4')) rtsp_client.auth_setup()?;
+            if self.et.as_ref().map(|et| et.contains('4')).unwrap_or(false) {
+                rtsp_client.auth_setup()?;
+            }
 
             let mut sdp = format!(
                 "v=0\r\no=iTunes {} 0 IN IP4 {}\r\ns=iTunes\r\nc=IN IP4 {}\r\nt=0 0\r\n",
