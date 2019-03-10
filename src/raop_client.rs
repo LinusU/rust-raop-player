@@ -8,7 +8,6 @@ use std::mem::size_of;
 use std::net::{UdpSocket};
 use std::net::Ipv4Addr;
 use std::ptr;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
