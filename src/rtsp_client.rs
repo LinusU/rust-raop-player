@@ -93,11 +93,6 @@ impl RTSPClient {
     // bool rtspcl_set_daap(struct rtspcl_s *p, u32_t timestamp, int count, va_list args);
     // bool rtspcl_set_artwork(struct rtspcl_s *p, u32_t timestamp, char *content_type, int size, char *image);
 
-    pub fn remove_all_exthds(&self) -> Result<(), Box<std::error::Error>> {
-        let success = unsafe { rtspcl_remove_all_exthds(self.c_handle) };
-        if success { Ok(()) } else { panic!("Failed to remove all exthds") }
-    }
-
     pub fn add_exthds(&self, key: &str, data: &str) -> Result<(), Box<std::error::Error>> {
         let success = unsafe { rtspcl_add_exthds(self.c_handle, CString::new(key).unwrap().into_raw(), CString::new(data).unwrap().into_raw()) };
         if success { Ok(()) } else { panic!("Failed to add exthds") }
@@ -115,6 +110,7 @@ impl RTSPClient {
 
 impl Drop for RTSPClient {
     fn drop(&mut self) {
+        unsafe { rtspcl_remove_all_exthds(self.c_handle); }
         unsafe { rtspcl_destroy(self.c_handle); }
     }
 }
