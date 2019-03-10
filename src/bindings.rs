@@ -16514,6 +16514,16 @@ extern "C" {
     ) -> bool;
 }
 extern "C" {
+    #[link_name = "\u{1}_read_line"]
+    pub fn read_line(
+        fd: ::std::os::raw::c_int,
+        line: *mut ::std::os::raw::c_char,
+        maxlen: ::std::os::raw::c_int,
+        timeout: ::std::os::raw::c_int,
+        no_poll: ::std::os::raw::c_int,
+    ) -> ::std::os::raw::c_int;
+}
+extern "C" {
     #[link_name = "\u{1}__rtp_timing_thread"]
     pub fn _rtp_timing_thread(args: *mut ::std::os::raw::c_void) -> *mut ::std::os::raw::c_void;
 }

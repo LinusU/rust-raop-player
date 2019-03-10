@@ -681,7 +681,7 @@ impl RaopClient {
         // This block holds the rtsp_client lock
         {
             // RTSP misc setup
-            let rtsp_client = self.rtsp_client.lock().unwrap();
+            let mut rtsp_client = self.rtsp_client.lock().unwrap();
             rtsp_client.add_exthds("Client-Instance", &sci)?;
             // FIXME:
             // if self.DACP_id[0] != 0 { rtspcl_add_eself.((*s_elient..cnew("DACP-ID").unwrap().into_raw(), self.DACP_id); }
