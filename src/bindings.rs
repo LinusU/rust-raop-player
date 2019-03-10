@@ -14974,10 +14974,100 @@ fn bindgen_test_layout_raopcl_t() {
     );
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Copy, Clone)]
 pub struct rtspcl_s {
-    _unused: [u8; 0],
+    pub fd: ::std::os::raw::c_int,
+    pub url: [::std::os::raw::c_char; 128usize],
+    pub cseq: ::std::os::raw::c_int,
+    pub exthds: [key_data_t; 64usize],
+    pub session: *mut ::std::os::raw::c_char,
+    pub useragent: *const ::std::os::raw::c_char,
+    pub local_addr: in_addr,
 }
+#[test]
+fn bindgen_test_layout_rtspcl_s() {
+    assert_eq!(
+        ::std::mem::size_of::<rtspcl_s>(),
+        1184usize,
+        concat!("Size of: ", stringify!(rtspcl_s))
+    );
+    assert_eq!(
+        ::std::mem::align_of::<rtspcl_s>(),
+        8usize,
+        concat!("Alignment of ", stringify!(rtspcl_s))
+    );
+    assert_eq!(
+        unsafe { &(*(::std::ptr::null::<rtspcl_s>())).fd as *const _ as usize },
+        0usize,
+        concat!(
+            "Offset of field: ",
+            stringify!(rtspcl_s),
+            "::",
+            stringify!(fd)
+        )
+    );
+    assert_eq!(
+        unsafe { &(*(::std::ptr::null::<rtspcl_s>())).url as *const _ as usize },
+        4usize,
+        concat!(
+            "Offset of field: ",
+            stringify!(rtspcl_s),
+            "::",
+            stringify!(url)
+        )
+    );
+    assert_eq!(
+        unsafe { &(*(::std::ptr::null::<rtspcl_s>())).cseq as *const _ as usize },
+        132usize,
+        concat!(
+            "Offset of field: ",
+            stringify!(rtspcl_s),
+            "::",
+            stringify!(cseq)
+        )
+    );
+    assert_eq!(
+        unsafe { &(*(::std::ptr::null::<rtspcl_s>())).exthds as *const _ as usize },
+        136usize,
+        concat!(
+            "Offset of field: ",
+            stringify!(rtspcl_s),
+            "::",
+            stringify!(exthds)
+        )
+    );
+    assert_eq!(
+        unsafe { &(*(::std::ptr::null::<rtspcl_s>())).session as *const _ as usize },
+        1160usize,
+        concat!(
+            "Offset of field: ",
+            stringify!(rtspcl_s),
+            "::",
+            stringify!(session)
+        )
+    );
+    assert_eq!(
+        unsafe { &(*(::std::ptr::null::<rtspcl_s>())).useragent as *const _ as usize },
+        1168usize,
+        concat!(
+            "Offset of field: ",
+            stringify!(rtspcl_s),
+            "::",
+            stringify!(useragent)
+        )
+    );
+    assert_eq!(
+        unsafe { &(*(::std::ptr::null::<rtspcl_s>())).local_addr as *const _ as usize },
+        1176usize,
+        concat!(
+            "Offset of field: ",
+            stringify!(rtspcl_s),
+            "::",
+            stringify!(local_addr)
+        )
+    );
+}
+pub type rtspcl_t = rtspcl_s;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct sock_info_s {
@@ -16416,6 +16506,14 @@ extern "C" {
     ) -> ::std::os::raw::c_int;
 }
 extern "C" {
+    #[link_name = "\u{1}_get_tcp_connect_by_host"]
+    pub fn get_tcp_connect_by_host(
+        sd: ::std::os::raw::c_int,
+        host: in_addr,
+        destport: ::std::os::raw::c_ushort,
+    ) -> bool;
+}
+extern "C" {
     #[link_name = "\u{1}__rtp_timing_thread"]
     pub fn _rtp_timing_thread(args: *mut ::std::os::raw::c_void) -> *mut ::std::os::raw::c_void;
 }
@@ -16493,4 +16591,19 @@ extern "C" {
 extern "C" {
     #[link_name = "\u{1}_lib_fd_isset"]
     pub fn lib_fd_isset(fd: ::std::os::raw::c_int, set: *mut fd_set) -> bool;
+}
+extern "C" {
+    #[link_name = "\u{1}_memcpy"]
+    pub fn memcpy(
+        destination: *mut ::std::os::raw::c_void,
+        source: *const ::std::os::raw::c_void,
+        num: ::std::os::raw::c_ulong,
+    ) -> *mut ::std::os::raw::c_void;
+}
+extern "C" {
+    #[link_name = "\u{1}_strcpy"]
+    pub fn strcpy(
+        destination: *mut ::std::os::raw::c_char,
+        source: *const ::std::os::raw::c_char,
+    ) -> *mut ::std::os::raw::c_char;
 }

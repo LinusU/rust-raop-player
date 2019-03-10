@@ -1,8 +1,10 @@
-use crate::bindings::{rtspcl_s, rtspcl_create, rtspcl_connect, rtspcl_disconnect, rtspcl_pair_verify, rtspcl_auth_setup, rtspcl_announce_sdp, rtspcl_setup, rtspcl_record, rtspcl_set_parameter, rtspcl_flush, rtspcl_remove_all_exthds, rtspcl_add_exthds, rtspcl_mark_del_exthds, rtspcl_local_ip, rtspcl_destroy, rtp_port_s, key_data_t};
+use crate::bindings::{rtspcl_s, rtspcl_create, rtspcl_disconnect, rtspcl_pair_verify, rtspcl_auth_setup, rtspcl_announce_sdp, rtspcl_setup, rtspcl_record, rtspcl_set_parameter, rtspcl_flush, rtspcl_remove_all_exthds, rtspcl_add_exthds, rtspcl_mark_del_exthds, rtspcl_local_ip, rtspcl_destroy, rtp_port_s, key_data_t};
+use crate::bindings::{open_tcp_socket, get_tcp_connect_by_host, getsockname, in_addr, sockaddr, sockaddr_in, memcpy, strcpy};
 
-use std::ffi::{CStr, CString};
-
+use std::ffi::{CStr, CString, c_void};
+use std::mem::size_of;
 use std::net::Ipv4Addr;
+use std::ptr;
 
 pub struct RTSPClient {
     c_handle: *mut rtspcl_s,
@@ -17,8 +19,31 @@ impl RTSPClient {
     // bool rtspcl_set_useragent(struct rtspcl_s *p, const char *name);
 
     pub fn connect(&self, local: Ipv4Addr, host: Ipv4Addr, destport: u16, sid: &str) -> Result<(), Box<std::error::Error>> {
-        let success = unsafe { rtspcl_connect(self.c_handle, local.into(), host.into(), destport, CString::new(sid).unwrap().into_raw()) };
-        if success { Ok(()) } else { panic!("Failed to connect") }
+        let mut name: sockaddr_in = sockaddr_in {
+            sin_len: 0,
+            sin_family: 0,
+            sin_port: 0,
+            sin_addr: in_addr { s_addr: 0 },
+            sin_zero: [0; 8usize],
+        };
+
+        let mut myport: u16 = 0;
+        let mut namelen: u32 = size_of::<sockaddr_in>() as u32;
+
+        unsafe {
+            (*self.c_handle).session = ptr::null_mut();
+            (*self.c_handle).fd = open_tcp_socket(local.into(), &mut myport);
+            if (*self.c_handle).fd == -1 { panic!("open_tcp_socket failed"); }
+            if !get_tcp_connect_by_host((*self.c_handle).fd, host.into(), destport) { panic!("get_tcp_connect_by_host failed"); }
+
+            getsockname((*self.c_handle).fd, ((&mut name) as *mut sockaddr_in) as *mut sockaddr, &mut namelen);
+            memcpy(((&mut (*self.c_handle).local_addr) as *mut in_addr) as *mut c_void, ((&mut name.sin_addr) as *mut in_addr) as *mut c_void, size_of::<in_addr>() as u64);
+        }
+
+        let url = format!("rtsp://{}/{}", host, sid);
+        unsafe { strcpy(&mut (*self.c_handle).url[0], CString::new(url).unwrap().into_raw()); }
+
+        Ok(())
     }
 
     pub fn disconnect(&self) -> Result<(), Box<std::error::Error>> {
