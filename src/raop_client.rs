@@ -1,6 +1,6 @@
 use crate::alac_encoder::AlacEncoder;
 use crate::bindings::{raop_state_t, raop_states_s_RAOP_DOWN, raop_states_s_RAOP_FLUSHED, raop_states_s_RAOP_STREAMING};
-use crate::bindings::{key_data_t, free_kd, get_ntp, kd_lookup, rtp_header_t, rtp_audio_pkt_t, free, pcm_to_alac_raw, malloc, rtp_sync_pkt_t, ntp_t, usleep, MAX_SAMPLES_PER_CHUNK, RAOP_LATENCY_MIN, rtp_port_s, sock_info_s, aes_context, aes_set_key, raopcl_s__bindgen_ty_1, raopcl_s__bindgen_ty_2, raopcl_s__bindgen_ty_1__bindgen_ty_1};
+use crate::bindings::{key_data_t, free_kd, get_ntp, kd_lookup, rtp_header_t, rtp_audio_pkt_t, free, pcm_to_alac_raw, malloc, rtp_sync_pkt_t, ntp_t, usleep, MAX_SAMPLES_PER_CHUNK, RAOP_LATENCY_MIN, aes_context, aes_set_key, raopcl_s__bindgen_ty_1, raopcl_s__bindgen_ty_2, raopcl_s__bindgen_ty_1__bindgen_ty_1};
 use crate::rtsp_client::RTSPClient;
 
 use std::ffi::{CStr, CString};
@@ -613,11 +613,11 @@ impl RaopClient {
         }
     }
 
-    pub fn analyse_setup(&self, setup_kd: &mut [key_data_t]) -> Result<(u16, u16, u16), Box<std::error::Error>> {
+    pub fn analyse_setup(&self, setup_headers: Vec<(String, String)>) -> Result<(u16, u16, u16), Box<std::error::Error>> {
         // get transport (port ...) info
-        let transport_header = unsafe { kd_lookup(&mut setup_kd[0], CString::new("Transport").unwrap().into_raw()) };
+        let transport_header = setup_headers.iter().find(|header| header.0.to_lowercase() == "transport").map(|header| header.1.as_str());
 
-        if transport_header.is_null() {
+        if transport_header.is_none() {
             error!("no transport in response");
             panic!("no transport in response");
         }
@@ -626,7 +626,7 @@ impl RaopClient {
         let mut ctrl_port: u16 = 0;
         let mut time_port: u16 = 0;
 
-        for token in unsafe { CStr::from_ptr(transport_header) }.to_str()?.split(';') {
+        for token in transport_header.unwrap().split(';') {
             match token.split('=').collect::<Vec<&str>>().as_slice() {
                 ["server_port", port] => audio_port = port.parse()?,
                 ["control_port", port] => ctrl_port = port.parse()?,
@@ -742,14 +742,8 @@ impl RaopClient {
             let local_audio_port = (*self.rtp_audio.lock().unwrap()).as_ref().unwrap().local_addr()?.port();
 
             // RTSP SETUP : get all RTP destination ports
-            let mut rtp_ports = rtp_port_s {
-                time: sock_info_s { fd: -1, lport: local_time_port, rport: 0 },
-                ctrl: sock_info_s { fd: -1, lport: local_ctrl_port, rport: 0 },
-                audio: sock_info_s { fd: -1, lport: local_audio_port, rport: 0 },
-            };
-            rtsp_client.setup(&mut rtp_ports, &mut kd)?;
-            let (remote_audio_port, remote_ctrl_port, remote_time_port) = self.analyse_setup(&mut kd)?;
-            unsafe { free_kd(&mut kd[0]); }
+            let setup_headers = rtsp_client.setup(local_ctrl_port, local_time_port)?;
+            let (remote_audio_port, remote_ctrl_port, remote_time_port) = self.analyse_setup(setup_headers)?;
 
             debug!("opened audio socket   l:{:05} r:{}", local_audio_port, remote_audio_port);
             debug!("opened timing socket  l:{:05} r:{}", local_time_port, remote_time_port);

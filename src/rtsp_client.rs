@@ -1,4 +1,4 @@
-use crate::bindings::{rtspcl_s, rtspcl_create, rtspcl_disconnect, rtspcl_pair_verify, rtspcl_auth_setup, rtspcl_setup, rtspcl_record, rtspcl_set_parameter, rtspcl_flush, rtspcl_remove_all_exthds, rtspcl_add_exthds, rtspcl_mark_del_exthds, rtspcl_local_ip, rtspcl_destroy, rtp_port_s, key_data_t};
+use crate::bindings::{rtspcl_s, rtspcl_create, rtspcl_disconnect, rtspcl_pair_verify, rtspcl_auth_setup, rtspcl_record, rtspcl_set_parameter, rtspcl_flush, rtspcl_remove_all_exthds, rtspcl_add_exthds, rtspcl_mark_del_exthds, rtspcl_local_ip, rtspcl_destroy, key_data_t};
 use crate::bindings::{open_tcp_socket, get_tcp_connect_by_host, getsockname, in_addr, sockaddr, sockaddr_in, send, recv, read_line, malloc, memcpy, strcpy, free};
 
 use std::ffi::{CStr, CString, c_void};
@@ -76,12 +76,23 @@ impl RTSPClient {
     }
 
     pub fn announce_sdp(&self, sdp: &str) -> Result<(), Box<std::error::Error>> {
-        self.exec_request("ANNOUNCE", Some(Body { content_type: "application/sdp", content: sdp })).map(|_| ())
+        self.exec_request("ANNOUNCE", Some(Body { content_type: "application/sdp", content: sdp }), vec!()).map(|_| ())
     }
 
-    pub fn setup(&self, port: &mut rtp_port_s, kd: &mut [key_data_t]) -> Result<(), Box<std::error::Error>> {
-        let success = unsafe { rtspcl_setup(self.c_handle, port, &mut kd[0]) };
-        if success { Ok(()) } else { panic!("Failed to setup") }
+    pub fn setup(&self, control_port: u16, timing_port: u16) -> Result<Vec<(String, String)>, Box<std::error::Error>> {
+        let transport = format!("RTP/AVP/UDP;unicast;interleaved=0-1;mode=record;control_port={};timing_port={}", control_port, timing_port);
+        let (headers, _) = self.exec_request("SETUP", None, vec!(("Transport", &transport)))?;
+        let session = headers.iter().find(|header| header.0.to_lowercase() == "session").map(|header| header.1.as_str());
+
+        if let Some(session) = session {
+            unsafe { (*self.c_handle).session = CString::new(session).unwrap().into_raw(); }
+            debug!("<------- : session:{}", session);
+        } else {
+            error!("no session in response");
+            panic!("no session in response");
+        }
+
+        Ok(headers)
     }
 
     pub fn record(&self, start_seq: u16, start_ts: u32, kd: &mut [key_data_t]) -> Result<(), Box<std::error::Error>> {
@@ -123,9 +134,8 @@ impl RTSPClient {
     // static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type,
     //                 char *content, int length, int get_response, key_data_t *hds,
     //                 key_data_t *rkd, char **resp_content, int *resp_len, char* url)
-    fn exec_request(&self, cmd: &str, body: Option<Body>) -> Result<(Vec<(String, String)>, String), Box<std::error::Error>> {
+    fn exec_request(&self, cmd: &str, body: Option<Body>, headers: Vec<(&str, &str)>) -> Result<(Vec<(String, String)>, String), Box<std::error::Error>> {
         let length: usize = 0;
-        let hds: Option<()> = None;
         let url: Option<&str> = None;
         // char line[2048];
         // char *req;
@@ -157,12 +167,8 @@ impl RTSPClient {
             // sprintf(req, "%s %s RTSP/1.0\r\n",cmd, url ? url : rtspcld->url);
             write!(&mut req, "{} {} RTSP/1.0\r\n", cmd, url)?;
 
-            if let Some(_) = hds {
-                panic!("Not implemented");
-                // for (i = 0; hds && hds[i].key != NULL; i++) {
-                //     sprintf(buf, "%s: %s\r\n", hds[i].key, hds[i].data);
-                //     strcat(req, buf);
-                // }
+            for (key, value) in &headers {
+                write!(&mut req, "{}: {}\r\n", key, value)?;
             }
 
             if let Some(ref body) = body {
