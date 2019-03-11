@@ -9,6 +9,11 @@ use std::ptr;
 
 use log::{error, info, debug};
 
+struct Body<'a> {
+    content_type: &'a str,
+    content: &'a str,
+}
+
 pub struct RTSPClient {
     c_handle: *mut rtspcl_s,
 
@@ -71,7 +76,7 @@ impl RTSPClient {
     }
 
     pub fn announce_sdp(&self, sdp: &str) -> Result<(), Box<std::error::Error>> {
-        self.exec_request("ANNOUNCE", "application/sdp", sdp).map(|_| ())
+        self.exec_request("ANNOUNCE", Some(Body { content_type: "application/sdp", content: sdp })).map(|_| ())
     }
 
     pub fn setup(&self, port: &mut rtp_port_s, kd: &mut [key_data_t]) -> Result<(), Box<std::error::Error>> {
@@ -118,7 +123,7 @@ impl RTSPClient {
     // static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type,
     //                 char *content, int length, int get_response, key_data_t *hds,
     //                 key_data_t *rkd, char **resp_content, int *resp_len, char* url)
-    fn exec_request(&self, cmd: &str, content_type: &str, content: &str) -> Result<(Vec<(String, String)>, String), Box<std::error::Error>> {
+    fn exec_request(&self, cmd: &str, body: Option<Body>) -> Result<(Vec<(String, String)>, String), Box<std::error::Error>> {
         let length: usize = 0;
         let hds: Option<()> = None;
         let url: Option<&str> = None;
@@ -160,12 +165,10 @@ impl RTSPClient {
                 // }
             }
 
-            write!(&mut req, "Content-Type: {}\r\n", content_type)?;
-            write!(&mut req, "Content-Length: {}\r\n", if length != 0 { length } else { content.len() })?;
-            // if (content_type && content) {
-            //     sprintf(buf, "Content-Type: %s\r\nContent-Length: %d\r\n", content_type, length ? length : (int) strlen(content));
-            //     strcat(req, buf);
-            // }
+            if let Some(ref body) = body {
+                write!(&mut req, "Content-Type: {}\r\n", body.content_type)?;
+                write!(&mut req, "Content-Length: {}\r\n", if length != 0 { length } else { body.content.len() })?;
+            }
 
             (*self.c_handle).cseq += 1;
             write!(&mut req, "CSeq: {}\r\n", (*self.c_handle).cseq)?;
@@ -184,12 +187,9 @@ impl RTSPClient {
 
             write!(&mut req, "\r\n")?;
 
-            write!(&mut req, "{}", content)?;
-            // if (content_type && content) {
-            //     len += (length ? length : strlen(content));
-            //     memcpy(req + strlen(req), content, length ? length : strlen(content));
-            //     req[len] = '\0';
-            // }
+            if let Some(ref body) = body {
+                write!(&mut req, "{}", body.content)?;
+            }
 
             let len = req.len();
             let rval = send((*self.c_handle).fd, CString::new(req.clone()).unwrap().into_raw() as *const c_void, len, 0);
