@@ -1,9 +1,8 @@
 use crate::alac_encoder::AlacEncoder;
 use crate::bindings::{raop_state_t, raop_states_s_RAOP_DOWN, raop_states_s_RAOP_FLUSHED, raop_states_s_RAOP_STREAMING};
-use crate::bindings::{key_data_t, free_kd, get_ntp, kd_lookup, rtp_header_t, rtp_audio_pkt_t, free, pcm_to_alac_raw, malloc, rtp_sync_pkt_t, ntp_t, usleep, MAX_SAMPLES_PER_CHUNK, RAOP_LATENCY_MIN, aes_context, aes_set_key, raopcl_s__bindgen_ty_1, raopcl_s__bindgen_ty_2, raopcl_s__bindgen_ty_1__bindgen_ty_1};
+use crate::bindings::{get_ntp, rtp_header_t, rtp_audio_pkt_t, free, pcm_to_alac_raw, malloc, rtp_sync_pkt_t, ntp_t, usleep, MAX_SAMPLES_PER_CHUNK, RAOP_LATENCY_MIN, aes_context, aes_set_key, raopcl_s__bindgen_ty_1, raopcl_s__bindgen_ty_2, raopcl_s__bindgen_ty_1__bindgen_ty_1};
 use crate::rtsp_client::RTSPClient;
 
-use std::ffi::{CStr, CString};
 use std::mem::size_of;
 use std::net::{UdpSocket};
 use std::net::Ipv4Addr;
@@ -656,8 +655,6 @@ impl RaopClient {
             }
         }
 
-        let mut kd = [key_data_t { key: ptr::null_mut(), data: ptr::null_mut() }; 64];
-
         *self.ssrc.lock().unwrap() = random();
         *self.retransmit.lock().unwrap() = 0;
 
@@ -752,23 +749,16 @@ impl RaopClient {
             (*self.rtp_audio.lock().unwrap()).as_ref().unwrap().connect((self.remote_addr, remote_audio_port))?;
             (*self.rtp_ctrl.lock().unwrap()).as_ref().unwrap().connect((self.remote_addr, remote_ctrl_port))?;
 
-            {
-                let status = self.status.lock().unwrap();
-                rtsp_client.record(status.seq_number + 1, NTP2TS(safe_get_ntp(), self.sample_rate) as u32, &mut kd)?;
-            }
-        }
+            let status = self.status.lock().unwrap();
+            let record_headers = rtsp_client.record(status.seq_number + 1, NTP2TS(safe_get_ntp(), self.sample_rate))?;
+            let returned_latency = record_headers.iter().find(|header| header.0.to_lowercase() == "audio-latency").map(|header| header.1.as_str());
 
-        unsafe {
-            let returned_latency = kd_lookup(&mut kd[0], CString::new("Audio-Latency").unwrap().into_raw());
-            if !returned_latency.is_null() {
-                let latency: u32 = CStr::from_ptr(returned_latency).to_str()?.trim().parse()?;
+            if let Some(returned_latency) = returned_latency {
+                let latency: u32 = returned_latency.parse()?;
                 let mut latency_frames = self.latency_frames.lock().unwrap();
 
-                if latency > *latency_frames {
-                    *latency_frames = latency;
-                }
+                if latency > *latency_frames { *latency_frames = latency; }
             }
-            free_kd(&mut kd[0]);
         }
 
         {

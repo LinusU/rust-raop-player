@@ -1,4 +1,4 @@
-use crate::bindings::{rtspcl_s, rtspcl_create, rtspcl_disconnect, rtspcl_pair_verify, rtspcl_auth_setup, rtspcl_record, rtspcl_set_parameter, rtspcl_flush, rtspcl_remove_all_exthds, rtspcl_add_exthds, rtspcl_mark_del_exthds, rtspcl_local_ip, rtspcl_destroy, key_data_t};
+use crate::bindings::{rtspcl_s, rtspcl_create, rtspcl_disconnect, rtspcl_pair_verify, rtspcl_auth_setup, rtspcl_set_parameter, rtspcl_flush, rtspcl_remove_all_exthds, rtspcl_add_exthds, rtspcl_mark_del_exthds, rtspcl_local_ip, rtspcl_destroy};
 use crate::bindings::{open_tcp_socket, get_tcp_connect_by_host, getsockname, in_addr, sockaddr, sockaddr_in, send, recv, read_line, malloc, memcpy, strcpy, free};
 
 use std::ffi::{CStr, CString, c_void};
@@ -95,9 +95,16 @@ impl RTSPClient {
         Ok(headers)
     }
 
-    pub fn record(&self, start_seq: u16, start_ts: u32, kd: &mut [key_data_t]) -> Result<(), Box<std::error::Error>> {
-        let success = unsafe { rtspcl_record(self.c_handle, start_seq, start_ts, &mut kd[0]) };
-        if success { Ok(()) } else { panic!("Failed to record") }
+    pub fn record(&self, start_seq: u16, start_ts: u64) -> Result<Vec<(String, String)>, Box<std::error::Error>> {
+        if unsafe { (*self.c_handle).session.is_null() } {
+            error!("no session in progress");
+            panic!("no session in progress");
+        }
+
+        let info = format!("seq={};rtptime={}", start_seq, start_ts);
+        let headers = vec!(("Range", "npt=0-"), ("RTP-Info", &info));
+
+        self.exec_request("RECORD", None, headers).map(|result| result.0)
     }
 
     pub fn set_parameter(&self, param: &str) -> Result<(), Box<std::error::Error>> {
