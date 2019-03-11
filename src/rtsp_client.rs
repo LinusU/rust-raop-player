@@ -1,4 +1,4 @@
-use crate::bindings::{rtspcl_s, rtspcl_create, rtspcl_disconnect, rtspcl_pair_verify, rtspcl_auth_setup, rtspcl_set_parameter, rtspcl_flush, rtspcl_remove_all_exthds, rtspcl_add_exthds, rtspcl_mark_del_exthds, rtspcl_local_ip, rtspcl_destroy};
+use crate::bindings::{rtspcl_s, rtspcl_create, rtspcl_disconnect, rtspcl_pair_verify, rtspcl_auth_setup, rtspcl_flush, rtspcl_remove_all_exthds, rtspcl_add_exthds, rtspcl_mark_del_exthds, rtspcl_local_ip, rtspcl_destroy};
 use crate::bindings::{open_tcp_socket, get_tcp_connect_by_host, getsockname, in_addr, sockaddr, sockaddr_in, send, recv, read_line, malloc, memcpy, strcpy, free};
 
 use std::ffi::{CStr, CString, c_void};
@@ -108,8 +108,7 @@ impl RTSPClient {
     }
 
     pub fn set_parameter(&self, param: &str) -> Result<(), Box<std::error::Error>> {
-        let success = unsafe { rtspcl_set_parameter(self.c_handle, CString::new(param).unwrap().into_raw()) };
-        if success { Ok(()) } else { panic!("Failed to set parameter") }
+        self.exec_request("SET_PARAMETER", Some(Body { content_type: "text/parameters", content: param }), vec!()).map(|_| ())
     }
 
     pub fn flush(&self, seq_number: u16, timestamp: u32) -> Result<(), Box<std::error::Error>> {
