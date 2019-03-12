@@ -1,4 +1,4 @@
-use crate::bindings::{rtspcl_s, rtspcl_create, rtspcl_disconnect, rtspcl_pair_verify, rtspcl_auth_setup, rtspcl_flush, rtspcl_remove_all_exthds, rtspcl_add_exthds, rtspcl_mark_del_exthds, rtspcl_local_ip, rtspcl_destroy};
+use crate::bindings::{rtspcl_s, rtspcl_create, rtspcl_disconnect, rtspcl_pair_verify, rtspcl_auth_setup, rtspcl_remove_all_exthds, rtspcl_add_exthds, rtspcl_mark_del_exthds, rtspcl_local_ip, rtspcl_destroy};
 use crate::bindings::{open_tcp_socket, get_tcp_connect_by_host, getsockname, in_addr, sockaddr, sockaddr_in, send, recv, read_line, malloc, memcpy, strcpy, free};
 
 use std::ffi::{CStr, CString, c_void};
@@ -111,9 +111,9 @@ impl RTSPClient {
         self.exec_request("SET_PARAMETER", Some(Body { content_type: "text/parameters", content: param }), vec!()).map(|_| ())
     }
 
-    pub fn flush(&self, seq_number: u16, timestamp: u32) -> Result<(), Box<std::error::Error>> {
-        let success = unsafe { rtspcl_flush(self.c_handle, seq_number, timestamp) };
-        if success { Ok(()) } else { panic!("Failed to flush") }
+    pub fn flush(&self, seq_number: u16, timestamp: u64) -> Result<(), Box<std::error::Error>> {
+        let info = format!("seq={};rtptime={}", seq_number, timestamp);
+        self.exec_request("FLUSH", None, vec!(("RTP-Info", &info))).map(|_| ())
     }
 
     // bool rtspcl_set_daap(struct rtspcl_s *p, u32_t timestamp, int count, va_list args);

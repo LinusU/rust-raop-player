@@ -797,7 +797,7 @@ impl RaopClient {
         self._terminate_rtp()?;
 
         let rtsp_client = self.rtsp_client.lock().unwrap();
-        let success1 = rtsp_client.flush(status.seq_number + 1, (status.head_ts + 1) as u32);
+        let success1 = rtsp_client.flush(status.seq_number + 1, status.head_ts + 1);
         let success2 = rtsp_client.disconnect();
 
         success1?;
