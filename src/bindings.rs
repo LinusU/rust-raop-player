@@ -15170,56 +15170,6 @@ fn bindgen_test_layout_rtp_port_s() {
     );
 }
 pub type rtp_port_t = rtp_port_s;
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct aes_context {
-    pub erk: [::std::os::raw::c_ulong; 64usize],
-    pub drk: [::std::os::raw::c_ulong; 64usize],
-    pub nr: ::std::os::raw::c_int,
-}
-#[test]
-fn bindgen_test_layout_aes_context() {
-    assert_eq!(
-        ::std::mem::size_of::<aes_context>(),
-        1032usize,
-        concat!("Size of: ", stringify!(aes_context))
-    );
-    assert_eq!(
-        ::std::mem::align_of::<aes_context>(),
-        8usize,
-        concat!("Alignment of ", stringify!(aes_context))
-    );
-    assert_eq!(
-        unsafe { &(*(::std::ptr::null::<aes_context>())).erk as *const _ as usize },
-        0usize,
-        concat!(
-            "Offset of field: ",
-            stringify!(aes_context),
-            "::",
-            stringify!(erk)
-        )
-    );
-    assert_eq!(
-        unsafe { &(*(::std::ptr::null::<aes_context>())).drk as *const _ as usize },
-        512usize,
-        concat!(
-            "Offset of field: ",
-            stringify!(aes_context),
-            "::",
-            stringify!(drk)
-        )
-    );
-    assert_eq!(
-        unsafe { &(*(::std::ptr::null::<aes_context>())).nr as *const _ as usize },
-        1024usize,
-        concat!(
-            "Offset of field: ",
-            stringify!(aes_context),
-            "::",
-            stringify!(nr)
-        )
-    );
-}
 extern "C" {
     #[link_name = "\u{1}_aes_set_key"]
     pub fn aes_set_key(
@@ -16616,4 +16566,265 @@ extern "C" {
         destination: *mut ::std::os::raw::c_char,
         source: *const ::std::os::raw::c_char,
     ) -> *mut ::std::os::raw::c_char;
+}
+
+/* curve25519 */
+pub const ed25519_public_key_size: usize = 32;
+pub const ed25519_secret_key_size: usize = 32;
+pub const ed25519_private_key_size: usize = 64;
+pub const ed25519_signature_size: usize = 64;
+extern "C" {
+    #[link_name = "\u{1}_ed25519_CreateKeyPair"]
+    pub fn ed25519_CreateKeyPair(
+        pubKey: *mut ::std::os::raw::c_uchar,
+        privKey: *mut ::std::os::raw::c_uchar,
+        blinding: *const ::std::os::raw::c_void,
+        sk: *const ::std::os::raw::c_uchar,
+    );
+}
+extern "C" {
+    #[link_name = "\u{1}_curve25519_dh_CalculatePublicKey"]
+    pub fn curve25519_dh_CalculatePublicKey(
+        pk: *mut ::std::os::raw::c_uchar,
+        sk: *mut ::std::os::raw::c_uchar,
+    );
+}
+extern "C" {
+    #[link_name = "\u{1}_curve25519_dh_CreateSharedKey"]
+    pub fn curve25519_dh_CreateSharedKey(
+        shared: *mut ::std::os::raw::c_uchar,
+        pk: *const ::std::os::raw::c_uchar,
+        sk: *mut ::std::os::raw::c_uchar,
+    );
+}
+extern "C" {
+    #[link_name = "\u{1}_ed25519_SignMessage"]
+    pub fn ed25519_SignMessage(
+        signature: *mut ::std::os::raw::c_uchar,
+        privKey: *const ::std::os::raw::c_uchar,
+        blinding: *const ::std::os::raw::c_void,
+        msg: *const ::std::os::raw::c_uchar,
+        msg_size: usize,
+    );
+}
+
+/* AES CTR */
+pub const CTR_LITTLE_ENDIAN: u8 = 0x00;
+pub const CTR_BIG_ENDIAN: u8 = 0x01;
+pub const CTR_RFC3686_LITTLE_ENDIAN: u8 = 0x10;
+pub const CTR_RFC3686_BIG_ENDIAN: u8 = 0x11;
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct aes_context {
+    pub erk: [u32; 64usize],
+    pub drk: [u32; 64usize],
+    pub nr: ::std::os::raw::c_int,
+}
+#[test]
+fn bindgen_test_layout_aes_context() {
+    assert_eq!(
+        ::std::mem::size_of::<aes_context>(),
+        516usize,
+        concat!("Size of: ", stringify!(aes_context))
+    );
+    assert_eq!(
+        ::std::mem::align_of::<aes_context>(),
+        4usize,
+        concat!("Alignment of ", stringify!(aes_context))
+    );
+    assert_eq!(
+        unsafe { &(*(::std::ptr::null::<aes_context>())).erk as *const _ as usize },
+        0usize,
+        concat!(
+            "Offset of field: ",
+            stringify!(aes_context),
+            "::",
+            stringify!(erk)
+        )
+    );
+    assert_eq!(
+        unsafe { &(*(::std::ptr::null::<aes_context>())).drk as *const _ as usize },
+        256usize,
+        concat!(
+            "Offset of field: ",
+            stringify!(aes_context),
+            "::",
+            stringify!(drk)
+        )
+    );
+    assert_eq!(
+        unsafe { &(*(::std::ptr::null::<aes_context>())).nr as *const _ as usize },
+        512usize,
+        concat!(
+            "Offset of field: ",
+            stringify!(aes_context),
+            "::",
+            stringify!(nr)
+        )
+    );
+}
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct aes_ctr_context {
+    pub blk: aes_ctr_context_ctr_blk_s,
+    pub mode: ::std::os::raw::c_int,
+    pub aes_ctx: aes_context,
+}
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub union aes_ctr_context_ctr_blk_s {
+    pub ctr: [u8; 16usize],
+    pub rfc3686: aes_ctr_context_ctr_blk_s__bindgen_ty_1,
+    _bindgen_union_align: [u8; 16usize],
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct aes_ctr_context_ctr_blk_s__bindgen_ty_1 {
+    pub nonce: [u8; 4usize],
+    pub iv: [u8; 8usize],
+    pub ctr: [u8; 4usize],
+}
+#[test]
+fn bindgen_test_layout_aes_ctr_context_ctr_blk_s__bindgen_ty_1() {
+    assert_eq!(
+        ::std::mem::size_of::<aes_ctr_context_ctr_blk_s__bindgen_ty_1>(),
+        16usize,
+        concat!(
+            "Size of: ",
+            stringify!(aes_ctr_context_ctr_blk_s__bindgen_ty_1)
+        )
+    );
+    assert_eq!(
+        ::std::mem::align_of::<aes_ctr_context_ctr_blk_s__bindgen_ty_1>(),
+        1usize,
+        concat!(
+            "Alignment of ",
+            stringify!(aes_ctr_context_ctr_blk_s__bindgen_ty_1)
+        )
+    );
+    assert_eq!(
+        unsafe {
+            &(*(::std::ptr::null::<aes_ctr_context_ctr_blk_s__bindgen_ty_1>())).nonce as *const _
+                as usize
+        },
+        0usize,
+        concat!(
+            "Offset of field: ",
+            stringify!(aes_ctr_context_ctr_blk_s__bindgen_ty_1),
+            "::",
+            stringify!(nonce)
+        )
+    );
+    assert_eq!(
+        unsafe {
+            &(*(::std::ptr::null::<aes_ctr_context_ctr_blk_s__bindgen_ty_1>())).iv as *const _
+                as usize
+        },
+        4usize,
+        concat!(
+            "Offset of field: ",
+            stringify!(aes_ctr_context_ctr_blk_s__bindgen_ty_1),
+            "::",
+            stringify!(iv)
+        )
+    );
+    assert_eq!(
+        unsafe {
+            &(*(::std::ptr::null::<aes_ctr_context_ctr_blk_s__bindgen_ty_1>())).ctr as *const _
+                as usize
+        },
+        12usize,
+        concat!(
+            "Offset of field: ",
+            stringify!(aes_ctr_context_ctr_blk_s__bindgen_ty_1),
+            "::",
+            stringify!(ctr)
+        )
+    );
+}
+#[test]
+fn bindgen_test_layout_aes_ctr_context_ctr_blk_s() {
+    assert_eq!(
+        ::std::mem::size_of::<aes_ctr_context_ctr_blk_s>(),
+        16usize,
+        concat!("Size of: ", stringify!(aes_ctr_context_ctr_blk_s))
+    );
+    assert_eq!(
+        ::std::mem::align_of::<aes_ctr_context_ctr_blk_s>(),
+        1usize,
+        concat!("Alignment of ", stringify!(aes_ctr_context_ctr_blk_s))
+    );
+    assert_eq!(
+        unsafe { &(*(::std::ptr::null::<aes_ctr_context_ctr_blk_s>())).ctr as *const _ as usize },
+        0usize,
+        concat!(
+            "Offset of field: ",
+            stringify!(aes_ctr_context_ctr_blk_s),
+            "::",
+            stringify!(ctr)
+        )
+    );
+    assert_eq!(
+        unsafe {
+            &(*(::std::ptr::null::<aes_ctr_context_ctr_blk_s>())).rfc3686 as *const _ as usize
+        },
+        0usize,
+        concat!(
+            "Offset of field: ",
+            stringify!(aes_ctr_context_ctr_blk_s),
+            "::",
+            stringify!(rfc3686)
+        )
+    );
+}
+#[test]
+fn bindgen_test_layout_aes_ctr_context() {
+    assert_eq!(
+        ::std::mem::size_of::<aes_ctr_context>(),
+        536usize,
+        concat!("Size of: ", stringify!(aes_ctr_context))
+    );
+    assert_eq!(
+        ::std::mem::align_of::<aes_ctr_context>(),
+        4usize,
+        concat!("Alignment of ", stringify!(aes_ctr_context))
+    );
+    assert_eq!(
+        unsafe { &(*(::std::ptr::null::<aes_ctr_context>())).blk as *const _ as usize },
+        0usize,
+        concat!(
+            "Offset of field: ",
+            stringify!(aes_ctr_context),
+            "::",
+            stringify!(blk)
+        )
+    );
+    assert_eq!(
+        unsafe { &(*(::std::ptr::null::<aes_ctr_context>())).mode as *const _ as usize },
+        16usize,
+        concat!(
+            "Offset of field: ",
+            stringify!(aes_ctr_context),
+            "::",
+            stringify!(mode)
+        )
+    );
+    assert_eq!(
+        unsafe { &(*(::std::ptr::null::<aes_ctr_context>())).aes_ctx as *const _ as usize },
+        20usize,
+        concat!(
+            "Offset of field: ",
+            stringify!(aes_ctr_context),
+            "::",
+            stringify!(aes_ctx)
+        )
+    );
+}
+extern "C" {
+    #[link_name = "\u{1}_aes_ctr_init"]
+    pub fn aes_ctr_init(ctx: *mut aes_ctr_context, key: *mut u8, iv: *mut u8, mode: u8);
+}
+extern "C" {
+    #[link_name = "\u{1}_aes_ctr_encrypt"]
+    pub fn aes_ctr_encrypt(ctx: *mut aes_ctr_context, data: *mut u8, sz: usize);
 }

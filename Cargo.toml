@@ -8,6 +8,7 @@ build = "build.rs"
 
 [dependencies]
 docopt = "^1.0.0"
+hex = "^0.3.2"
 log = "^0.4.1"
 openssl-sys = "^0.9.41"
 rand = "^0.6.5"

@@ -1,17 +1,25 @@
-use crate::bindings::{rtspcl_s, rtspcl_create, rtspcl_disconnect, rtspcl_pair_verify, rtspcl_auth_setup, rtspcl_remove_all_exthds, rtspcl_add_exthds, rtspcl_mark_del_exthds, rtspcl_local_ip, rtspcl_destroy};
+use crate::bindings::{rtspcl_s, rtspcl_create, rtspcl_disconnect, rtspcl_auth_setup, rtspcl_remove_all_exthds, rtspcl_add_exthds, rtspcl_mark_del_exthds, rtspcl_local_ip, rtspcl_destroy};
 use crate::bindings::{open_tcp_socket, get_tcp_connect_by_host, getsockname, in_addr, sockaddr, sockaddr_in, send, recv, read_line, malloc, memcpy, strcpy, free};
+use crate::bindings::{ed25519_public_key_size, ed25519_secret_key_size, ed25519_private_key_size, ed25519_signature_size, ed25519_CreateKeyPair, curve25519_dh_CalculatePublicKey, curve25519_dh_CreateSharedKey, ed25519_SignMessage};
+use crate::bindings::{CTR_BIG_ENDIAN, aes_ctr_context, aes_ctr_init, aes_ctr_encrypt};
+
+use openssl_sys::{SHA512_CTX, SHA512_Init, SHA512_Update, SHA512_Final};
 
 use std::ffi::{CStr, CString, c_void};
-use std::fmt::Write;
+use std::io::Write;
 use std::mem::size_of;
 use std::net::Ipv4Addr;
 use std::ptr;
+use std::str::from_utf8;
 
+use hex::FromHex;
 use log::{error, info, debug};
+use rand::random;
 
-struct Body<'a> {
-    content_type: &'a str,
-    content: &'a str,
+enum Body<'a> {
+    Text { content_type: &'a str, content: &'a str },
+    Blob { content_type: &'a str, content: &'a [u8] },
+    None,
 }
 
 pub struct RTSPClient {
@@ -65,9 +73,90 @@ impl RTSPClient {
     // bool rtspcl_is_sane(struct rtspcl_s *p);
     // bool rtspcl_options(struct rtspcl_s *p, key_data_t *rkd);
 
-    pub fn pair_verify(&self, secret: &str) -> Result<(), Box<std::error::Error>> {
-        let success = unsafe { rtspcl_pair_verify(self.c_handle, CString::new(secret).unwrap().into_raw()) };
-        if success { Ok(()) } else { panic!("Failed to pair verify") }
+    pub fn pair_verify(&self, secret_hex: &str) -> Result<(), Box<std::error::Error>> {
+        // retrieve authentication keys from secret
+        let secret = <[u8; ed25519_secret_key_size]>::from_hex(secret_hex)?;
+        let mut auth_pub = [0u8; ed25519_public_key_size];
+        let mut auth_priv = [0u8; ed25519_private_key_size];
+        unsafe { ed25519_CreateKeyPair(&mut auth_pub[0], &mut auth_priv[0], ptr::null_mut(), &secret[0]); }
+        drop(secret);
+
+        // create a verification public key
+        let mut verify_pub = [0u8; ed25519_public_key_size];
+        let mut verify_secret: [u8; ed25519_secret_key_size] = random();
+        unsafe { curve25519_dh_CalculatePublicKey(&mut verify_pub[0], &mut verify_secret[0]); }
+
+        // POST the auth_pub and verify_pub concataned
+        let mut buf = Vec::with_capacity(4 + ed25519_public_key_size * 2);
+        buf.write(b"\x01\x00\x00\x00")?;
+        buf.write(&verify_pub)?;
+        buf.write(&auth_pub)?;
+
+        let (_, content) = self.exec_request("POST", Body::Blob { content_type: "application/octet-stream", content: &buf }, vec!(), Some("/pair-verify"))
+            .map_err(|err| { error!("AppleTV verify step 1 failed (pair again)"); err })?;
+
+        drop(buf);
+
+        // FIXME: flag to self.exec_request should make it return binary response
+        let content = content.as_bytes();
+
+        // get atv_pub and atv_data then create shared secret
+        let atv_pub = &content[0..ed25519_public_key_size];
+        let atv_data = &content[(content.len() - ed25519_public_key_size)..];
+        let mut shared_secret = [0u8; ed25519_secret_key_size];
+        unsafe { curve25519_dh_CreateSharedKey(&mut shared_secret[0], &atv_pub[0], &mut verify_secret[0]); }
+
+        // build AES-key & AES-iv from shared secret digest
+        let mut aes_key: [u8; 16] = unsafe { std::mem::uninitialized() };
+        unsafe {
+            let header = b"Pair-Verify-AES-Key";
+            let mut digest: SHA512_CTX = std::mem::uninitialized();
+
+            SHA512_Init(&mut digest);
+            SHA512_Update(&mut digest, (&header[0] as *const u8) as *const c_void, header.len());
+            SHA512_Update(&mut digest, (&shared_secret[0] as *const u8) as *const c_void, shared_secret.len());
+            SHA512_Final(&mut aes_key[0], &mut digest);
+        }
+
+        let mut aes_iv: [u8; 16] = unsafe { std::mem::uninitialized() };
+        unsafe {
+            let header = b"Pair-Verify-AES-IV";
+            let mut digest: SHA512_CTX = std::mem::uninitialized();
+
+            SHA512_Init(&mut digest);
+            SHA512_Update(&mut digest, (&header[0] as *const u8) as *const c_void, header.len());
+            SHA512_Update(&mut digest, (&shared_secret[0] as *const u8) as *const c_void, shared_secret.len());
+            SHA512_Final(&mut aes_iv[0], &mut digest);
+        }
+
+        // sign the verify_pub and atv_pub
+        let mut signed_keys: [u8; ed25519_signature_size] = unsafe { std::mem::uninitialized() };
+        unsafe {
+            let mut message = Vec::with_capacity(ed25519_public_key_size * 2);
+            message.write(&verify_pub)?;
+            message.write(&atv_pub)?;
+            ed25519_SignMessage(&mut signed_keys[0], &auth_priv[0], ptr::null(), &message[0], message.len());
+        }
+
+        // encrypt the signed result + atv_data, add 4 NULL bytes at the beginning
+        let mut ctx: aes_ctr_context = unsafe { std::mem::uninitialized() };
+        let mut buf = [0u8; 4 + ed25519_public_key_size * 2];
+        let four_null_bytes = [0u8; 4];
+
+        // FIXME: https://github.com/philippe44/RAOP-Player/issues/12
+        unsafe {
+            aes_ctr_init(&mut ctx, &mut aes_key[0], &mut aes_iv[0], CTR_BIG_ENDIAN);
+            memcpy((&mut buf[0] as *mut u8) as *mut c_void, (&atv_data[0] as *const u8) as *const c_void, atv_data.len() as u64);
+            aes_ctr_encrypt(&mut ctx, &mut buf[0], buf.len());
+            memcpy((&mut buf[4] as *mut u8) as *mut c_void, (&signed_keys[0] as *const u8) as *const c_void, signed_keys.len() as u64);
+            aes_ctr_encrypt(&mut ctx, &mut buf[4], ed25519_signature_size);
+            memcpy((&mut buf[0] as *mut u8) as *mut c_void, (&four_null_bytes[0] as *const u8) as *const c_void, four_null_bytes.len() as u64);
+        }
+        let len = ed25519_signature_size + 4;
+
+        self.exec_request("POST", Body::Blob { content_type: "application/octet-stream", content: &buf[0..len] }, vec!(), Some("/pair-verify"))
+            .map_err(|err| { error!("AppleTV verify step 2 failed (pair again)"); err })
+            .map(|_| ())
     }
 
     pub fn auth_setup(&self) -> Result<(), Box<std::error::Error>> {
@@ -76,12 +165,12 @@ impl RTSPClient {
     }
 
     pub fn announce_sdp(&self, sdp: &str) -> Result<(), Box<std::error::Error>> {
-        self.exec_request("ANNOUNCE", Some(Body { content_type: "application/sdp", content: sdp }), vec!()).map(|_| ())
+        self.exec_request("ANNOUNCE", Body::Text { content_type: "application/sdp", content: sdp }, vec!(), None).map(|_| ())
     }
 
     pub fn setup(&self, control_port: u16, timing_port: u16) -> Result<Vec<(String, String)>, Box<std::error::Error>> {
         let transport = format!("RTP/AVP/UDP;unicast;interleaved=0-1;mode=record;control_port={};timing_port={}", control_port, timing_port);
-        let (headers, _) = self.exec_request("SETUP", None, vec!(("Transport", &transport)))?;
+        let (headers, _) = self.exec_request("SETUP", Body::None, vec!(("Transport", &transport)), None)?;
         let session = headers.iter().find(|header| header.0.to_lowercase() == "session").map(|header| header.1.as_str());
 
         if let Some(session) = session {
@@ -104,16 +193,16 @@ impl RTSPClient {
         let info = format!("seq={};rtptime={}", start_seq, start_ts);
         let headers = vec!(("Range", "npt=0-"), ("RTP-Info", &info));
 
-        self.exec_request("RECORD", None, headers).map(|result| result.0)
+        self.exec_request("RECORD", Body::None, headers, None).map(|result| result.0)
     }
 
     pub fn set_parameter(&self, param: &str) -> Result<(), Box<std::error::Error>> {
-        self.exec_request("SET_PARAMETER", Some(Body { content_type: "text/parameters", content: param }), vec!()).map(|_| ())
+        self.exec_request("SET_PARAMETER", Body::Text { content_type: "text/parameters", content: param }, vec!(), None).map(|_| ())
     }
 
     pub fn flush(&self, seq_number: u16, timestamp: u64) -> Result<(), Box<std::error::Error>> {
         let info = format!("seq={};rtptime={}", seq_number, timestamp);
-        self.exec_request("FLUSH", None, vec!(("RTP-Info", &info))).map(|_| ())
+        self.exec_request("FLUSH", Body::None, vec!(("RTP-Info", &info)), None).map(|_| ())
     }
 
     // bool rtspcl_set_daap(struct rtspcl_s *p, u32_t timestamp, int count, va_list args);
@@ -140,9 +229,7 @@ impl RTSPClient {
     // static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type,
     //                 char *content, int length, int get_response, key_data_t *hds,
     //                 key_data_t *rkd, char **resp_content, int *resp_len, char* url)
-    fn exec_request(&self, cmd: &str, body: Option<Body>, headers: Vec<(&str, &str)>) -> Result<(Vec<(String, String)>, String), Box<std::error::Error>> {
-        let length: usize = 0;
-        let url: Option<&str> = None;
+    fn exec_request(&self, cmd: &str, body: Body, headers: Vec<(&str, &str)>, url: Option<&str>) -> Result<(Vec<(String, String)>, String), Box<std::error::Error>> {
         // char line[2048];
         // char *req;
         // char buf[128];
@@ -164,22 +251,26 @@ impl RTSPClient {
             // i = poll(&pfds, 1, 0);
             // if (i == -1 || (pfds.revents & POLLERR) || (pfds.revents & POLLHUP)) return false;
 
-            let mut req = String::new();
+            let mut req = Vec::new();
 
             let url = url.unwrap_or_else(|| {
                 CStr::from_ptr(&(*self.c_handle).url[0]).to_str().unwrap()
             });
 
-            // sprintf(req, "%s %s RTSP/1.0\r\n",cmd, url ? url : rtspcld->url);
             write!(&mut req, "{} {} RTSP/1.0\r\n", cmd, url)?;
 
             for (key, value) in &headers {
                 write!(&mut req, "{}: {}\r\n", key, value)?;
             }
 
-            if let Some(ref body) = body {
-                write!(&mut req, "Content-Type: {}\r\n", body.content_type)?;
-                write!(&mut req, "Content-Length: {}\r\n", if length != 0 { length } else { body.content.len() })?;
+            if let Body::Text { ref content_type, ref content } = body {
+                write!(&mut req, "Content-Type: {}\r\n", content_type)?;
+                write!(&mut req, "Content-Length: {}\r\n", content.len())?;
+            }
+
+            if let Body::Blob { ref content_type, ref content } = body {
+                write!(&mut req, "Content-Type: {}\r\n", content_type)?;
+                write!(&mut req, "Content-Length: {}\r\n", content.len())?;
             }
 
             (*self.c_handle).cseq += 1;
@@ -199,13 +290,22 @@ impl RTSPClient {
 
             write!(&mut req, "\r\n")?;
 
-            if let Some(ref body) = body {
-                write!(&mut req, "{}", body.content)?;
+            if let Body::Text { content_type: _, ref content } = body {
+                write!(&mut req, "{}", content)?;
+            }
+
+            if let Body::Blob { content_type: _, ref content } = body {
+                req.write(content)?;
             }
 
             let len = req.len();
             let rval = send((*self.c_handle).fd, CString::new(req.clone()).unwrap().into_raw() as *const c_void, len, 0);
-            debug!("----> : write {}", &req);
+
+            match body {
+                Body::Text { content_type: _, content: _ } => debug!("----> : write {}", from_utf8(&req).unwrap()),
+                Body::Blob { content_type: _, content: _ } => debug!("----> : send binary request"),
+                Body::None => debug!("----> : write {}", from_utf8(&req).unwrap()),
+            }
 
             if rval != len as isize {
                 error!("couldn't write request ({}!={})", rval, len);
