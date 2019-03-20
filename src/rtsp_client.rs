@@ -88,9 +88,9 @@ impl RTSPClient {
 
         // POST the auth_pub and verify_pub concataned
         let mut buf = Vec::with_capacity(4 + ed25519_public_key_size * 2);
-        buf.write(b"\x01\x00\x00\x00")?;
-        buf.write(&verify_pub)?;
-        buf.write(&auth_pub)?;
+        buf.extend(b"\x01\x00\x00\x00");
+        buf.extend_from_slice(&verify_pub);
+        buf.extend_from_slice(&auth_pub);
 
         let (_, content) = self.exec_request("POST", Body::Blob { content_type: "application/octet-stream", content: &buf }, vec!(), Some("/pair-verify"))
             .map_err(|err| { error!("AppleTV verify step 1 failed (pair again)"); err })?;
@@ -133,8 +133,8 @@ impl RTSPClient {
         let mut signed_keys: [u8; ed25519_signature_size] = unsafe { std::mem::uninitialized() };
         unsafe {
             let mut message = Vec::with_capacity(ed25519_public_key_size * 2);
-            message.write(&verify_pub)?;
-            message.write(&atv_pub)?;
+            message.extend_from_slice(&verify_pub);
+            message.extend_from_slice(&atv_pub);
             ed25519_SignMessage(&mut signed_keys[0], &auth_priv[0], ptr::null(), &message[0], message.len());
         }
 
@@ -304,7 +304,7 @@ impl RTSPClient {
             }
 
             if let Body::Blob { content_type: _, ref content } = body {
-                req.write(content)?;
+                req.extend_from_slice(content);
             }
 
             let len = req.len();
