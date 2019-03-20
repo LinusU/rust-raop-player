@@ -1,5 +1,5 @@
-use crate::bindings::{rtspcl_s, rtspcl_create, rtspcl_disconnect, rtspcl_remove_all_exthds, rtspcl_add_exthds, rtspcl_mark_del_exthds, rtspcl_destroy};
-use crate::bindings::{open_tcp_socket, get_tcp_connect_by_host, getsockname, in_addr, sockaddr, sockaddr_in, send, recv, read_line, malloc, memcpy, strcpy, free};
+use crate::bindings::{rtspcl_s, rtspcl_create, rtspcl_remove_all_exthds, rtspcl_add_exthds, rtspcl_mark_del_exthds, rtspcl_destroy};
+use crate::bindings::{open_tcp_socket, get_tcp_connect_by_host, getsockname, in_addr, sockaddr, sockaddr_in, send, recv, close, read_line, malloc, memcpy, strcpy, free};
 use crate::bindings::{ed25519_public_key_size, ed25519_secret_key_size, ed25519_private_key_size, ed25519_signature_size, ed25519_CreateKeyPair, curve25519_dh_CalculatePublicKey, curve25519_dh_CreateSharedKey, ed25519_SignMessage};
 use crate::bindings::{CTR_BIG_ENDIAN, aes_ctr_context, aes_ctr_init, aes_ctr_encrypt};
 
@@ -67,8 +67,14 @@ impl RTSPClient {
     }
 
     pub fn disconnect(&self) -> Result<(), Box<std::error::Error>> {
-        let success = unsafe { rtspcl_disconnect(self.c_handle) };
-        if success { Ok(()) } else { panic!("Failed to disconnect") }
+        let result = self.exec_request("TEARDOWN", Body::None, vec!(), None);
+
+        unsafe {
+            close((*self.c_handle).fd);
+            (*self.c_handle).fd = -1;
+        }
+
+        result.map(|_| ())
     }
 
     // bool rtspcl_is_connected(struct rtspcl_s *p);
