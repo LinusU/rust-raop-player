@@ -1,4 +1,4 @@
-use crate::bindings::{rtspcl_s, rtspcl_create, rtspcl_disconnect, rtspcl_auth_setup, rtspcl_remove_all_exthds, rtspcl_add_exthds, rtspcl_mark_del_exthds, rtspcl_local_ip, rtspcl_destroy};
+use crate::bindings::{rtspcl_s, rtspcl_create, rtspcl_disconnect, rtspcl_remove_all_exthds, rtspcl_add_exthds, rtspcl_mark_del_exthds, rtspcl_local_ip, rtspcl_destroy};
 use crate::bindings::{open_tcp_socket, get_tcp_connect_by_host, getsockname, in_addr, sockaddr, sockaddr_in, send, recv, read_line, malloc, memcpy, strcpy, free};
 use crate::bindings::{ed25519_public_key_size, ed25519_secret_key_size, ed25519_private_key_size, ed25519_signature_size, ed25519_CreateKeyPair, curve25519_dh_CalculatePublicKey, curve25519_dh_CreateSharedKey, ed25519_SignMessage};
 use crate::bindings::{CTR_BIG_ENDIAN, aes_ctr_context, aes_ctr_init, aes_ctr_encrypt};
@@ -160,8 +160,17 @@ impl RTSPClient {
     }
 
     pub fn auth_setup(&self) -> Result<(), Box<std::error::Error>> {
-        let success = unsafe { rtspcl_auth_setup(self.c_handle) };
-        if success { Ok(()) } else { panic!("Failed to setup auth") }
+        let mut pub_key = [0u8; ed25519_public_key_size];
+        let mut secret: [u8; ed25519_secret_key_size] = random();
+        unsafe { curve25519_dh_CalculatePublicKey(&mut pub_key[0], &mut secret[0]); }
+
+        let mut buf = Vec::with_capacity(1 + ed25519_public_key_size);
+        buf.push(0x01);
+        buf.extend_from_slice(&pub_key);
+
+        self.exec_request("POST", Body::Blob { content_type: "application/octet-stream", content: &buf }, vec!(), Some("/auth-setup"))
+            .map_err(|err| { error!("auth-setup failed"); err })
+            .map(|_| ())
     }
 
     pub fn announce_sdp(&self, sdp: &str) -> Result<(), Box<std::error::Error>> {
