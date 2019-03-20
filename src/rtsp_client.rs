@@ -1,4 +1,4 @@
-use crate::bindings::{rtspcl_s, rtspcl_create, rtspcl_remove_all_exthds, rtspcl_add_exthds, rtspcl_mark_del_exthds, rtspcl_destroy};
+use crate::bindings::{rtspcl_s, rtspcl_create, rtspcl_remove_all_exthds, rtspcl_add_exthds, rtspcl_mark_del_exthds};
 use crate::bindings::{open_tcp_socket, get_tcp_connect_by_host, getsockname, in_addr, sockaddr, sockaddr_in, send, recv, close, read_line, malloc, memcpy, strcpy, free};
 use crate::bindings::{ed25519_public_key_size, ed25519_secret_key_size, ed25519_private_key_size, ed25519_signature_size, ed25519_CreateKeyPair, curve25519_dh_CalculatePublicKey, curve25519_dh_CreateSharedKey, ed25519_SignMessage};
 use crate::bindings::{CTR_BIG_ENDIAN, aes_ctr_context, aes_ctr_init, aes_ctr_encrypt};
@@ -66,7 +66,7 @@ impl RTSPClient {
         Ok(())
     }
 
-    pub fn disconnect(&self) -> Result<(), Box<std::error::Error>> {
+    fn _disconnect(&self) -> Result<(), Box<std::error::Error>> {
         let result = self.exec_request("TEARDOWN", Body::None, vec!(), None);
 
         unsafe {
@@ -400,6 +400,10 @@ impl RTSPClient {
 impl Drop for RTSPClient {
     fn drop(&mut self) {
         unsafe { rtspcl_remove_all_exthds(self.c_handle); }
-        unsafe { rtspcl_destroy(self.c_handle); }
+
+        let result = self._disconnect();
+        unsafe { free(((*self.c_handle).session) as *mut c_void); }
+        unsafe { free(self.c_handle as *mut c_void); }
+        result.unwrap();
     }
 }
