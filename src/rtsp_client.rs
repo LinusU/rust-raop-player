@@ -1,4 +1,4 @@
-use crate::bindings::{rtspcl_s, rtspcl_create, rtspcl_disconnect, rtspcl_remove_all_exthds, rtspcl_add_exthds, rtspcl_mark_del_exthds, rtspcl_local_ip, rtspcl_destroy};
+use crate::bindings::{rtspcl_s, rtspcl_create, rtspcl_disconnect, rtspcl_remove_all_exthds, rtspcl_add_exthds, rtspcl_mark_del_exthds, rtspcl_destroy};
 use crate::bindings::{open_tcp_socket, get_tcp_connect_by_host, getsockname, in_addr, sockaddr, sockaddr_in, send, recv, read_line, malloc, memcpy, strcpy, free};
 use crate::bindings::{ed25519_public_key_size, ed25519_secret_key_size, ed25519_private_key_size, ed25519_signature_size, ed25519_CreateKeyPair, curve25519_dh_CalculatePublicKey, curve25519_dh_CreateSharedKey, ed25519_SignMessage};
 use crate::bindings::{CTR_BIG_ENDIAN, aes_ctr_context, aes_ctr_init, aes_ctr_encrypt};
@@ -26,17 +26,18 @@ pub struct RTSPClient {
     c_handle: *mut rtspcl_s,
 
     headers: Vec<(String, String)>,
+    local_addr: Option<Ipv4Addr>,
 }
 
 impl RTSPClient {
     pub fn new(user_agent: &str) -> Option<RTSPClient> {
         let c_handle = unsafe { rtspcl_create(CString::new(user_agent).unwrap().into_raw()) };
-        if c_handle.is_null() { None } else { Some(RTSPClient { c_handle, headers: vec!() }) }
+        if c_handle.is_null() { None } else { Some(RTSPClient { c_handle, headers: vec!(), local_addr: None }) }
     }
 
     // bool rtspcl_set_useragent(struct rtspcl_s *p, const char *name);
 
-    pub fn connect(&self, local: Ipv4Addr, host: Ipv4Addr, destport: u16, sid: &str) -> Result<(), Box<std::error::Error>> {
+    pub fn connect(&mut self, local: Ipv4Addr, host: Ipv4Addr, destport: u16, sid: &str) -> Result<(), Box<std::error::Error>> {
         let mut name: sockaddr_in = sockaddr_in {
             sin_len: 0,
             sin_family: 0,
@@ -55,8 +56,9 @@ impl RTSPClient {
             if !get_tcp_connect_by_host((*self.c_handle).fd, host.into(), destport) { panic!("get_tcp_connect_by_host failed"); }
 
             getsockname((*self.c_handle).fd, ((&mut name) as *mut sockaddr_in) as *mut sockaddr, &mut namelen);
-            memcpy(((&mut (*self.c_handle).local_addr) as *mut in_addr) as *mut c_void, ((&mut name.sin_addr) as *mut in_addr) as *mut c_void, size_of::<in_addr>() as u64);
         }
+
+        self.local_addr = Some(name.sin_addr.into());
 
         let url = format!("rtsp://{}/{}", host, sid);
         unsafe { strcpy(&mut (*self.c_handle).url[0], CString::new(url).unwrap().into_raw()); }
@@ -232,7 +234,7 @@ impl RTSPClient {
     }
 
     pub fn local_ip(&self) -> Result<String, Box<std::error::Error>> {
-        Ok(unsafe { CStr::from_ptr(rtspcl_local_ip(self.c_handle)).to_str()?.to_owned() })
+        Ok(self.local_addr.unwrap().to_string())
     }
 
     // static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type,
