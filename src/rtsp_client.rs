@@ -1,5 +1,4 @@
-use crate::bindings::{rtspcl_s, rtspcl_create, rtspcl_remove_all_exthds, rtspcl_add_exthds, rtspcl_mark_del_exthds};
-use crate::bindings::{open_tcp_socket, get_tcp_connect_by_host, getsockname, in_addr, sockaddr, sockaddr_in, send, recv, close, read_line, malloc, memcpy, strcpy, free};
+use crate::bindings::{open_tcp_socket, get_tcp_connect_by_host, getsockname, in_addr, sockaddr, sockaddr_in, send, recv, close, read_line, malloc, memcpy, free};
 use crate::bindings::{ed25519_public_key_size, ed25519_secret_key_size, ed25519_private_key_size, ed25519_signature_size, ed25519_CreateKeyPair, curve25519_dh_CalculatePublicKey, curve25519_dh_CreateSharedKey, ed25519_SignMessage};
 use crate::bindings::{CTR_BIG_ENDIAN, aes_ctr_context, aes_ctr_init, aes_ctr_encrypt};
 
@@ -23,16 +22,26 @@ enum Body<'a> {
 }
 
 pub struct RTSPClient {
-    c_handle: *mut rtspcl_s,
-
+    fd: ::std::os::raw::c_int,
+    url: Option<String>,
+    cseq: u64,
     headers: Vec<(String, String)>,
+    session: Option<String>,
+    user_agent: String,
     local_addr: Option<Ipv4Addr>,
 }
 
 impl RTSPClient {
-    pub fn new(user_agent: &str) -> Option<RTSPClient> {
-        let c_handle = unsafe { rtspcl_create(CString::new(user_agent).unwrap().into_raw()) };
-        if c_handle.is_null() { None } else { Some(RTSPClient { c_handle, headers: vec!(), local_addr: None }) }
+    pub fn new(user_agent: &str) -> RTSPClient {
+        RTSPClient {
+            fd: -1,
+            url: None,
+            cseq: 0,
+            headers: vec!(),
+            session: None,
+            user_agent: user_agent.to_owned(),
+            local_addr: None,
+        }
     }
 
     // bool rtspcl_set_useragent(struct rtspcl_s *p, const char *name);
@@ -49,30 +58,26 @@ impl RTSPClient {
         let mut myport: u16 = 0;
         let mut namelen: u32 = size_of::<sockaddr_in>() as u32;
 
+        self.session = None;
         unsafe {
-            (*self.c_handle).session = ptr::null_mut();
-            (*self.c_handle).fd = open_tcp_socket(local.into(), &mut myport);
-            if (*self.c_handle).fd == -1 { panic!("open_tcp_socket failed"); }
-            if !get_tcp_connect_by_host((*self.c_handle).fd, host.into(), destport) { panic!("get_tcp_connect_by_host failed"); }
+            self.fd = open_tcp_socket(local.into(), &mut myport);
+            if self.fd == -1 { panic!("open_tcp_socket failed"); }
+            if !get_tcp_connect_by_host(self.fd, host.into(), destport) { panic!("get_tcp_connect_by_host failed"); }
 
-            getsockname((*self.c_handle).fd, ((&mut name) as *mut sockaddr_in) as *mut sockaddr, &mut namelen);
+            getsockname(self.fd, ((&mut name) as *mut sockaddr_in) as *mut sockaddr, &mut namelen);
         }
 
         self.local_addr = Some(name.sin_addr.into());
-
-        let url = format!("rtsp://{}/{}", host, sid);
-        unsafe { strcpy(&mut (*self.c_handle).url[0], CString::new(url).unwrap().into_raw()); }
+        self.url = Some(format!("rtsp://{}/{}", host, sid));
 
         Ok(())
     }
 
-    fn _disconnect(&self) -> Result<(), Box<std::error::Error>> {
+    fn _disconnect(&mut self) -> Result<(), Box<std::error::Error>> {
         let result = self.exec_request("TEARDOWN", Body::None, vec!(), None);
 
-        unsafe {
-            close((*self.c_handle).fd);
-            (*self.c_handle).fd = -1;
-        }
+        unsafe { close(self.fd); }
+        self.fd = -1;
 
         result.map(|_| ())
     }
@@ -81,7 +86,7 @@ impl RTSPClient {
     // bool rtspcl_is_sane(struct rtspcl_s *p);
     // bool rtspcl_options(struct rtspcl_s *p, key_data_t *rkd);
 
-    pub fn pair_verify(&self, secret_hex: &str) -> Result<(), Box<std::error::Error>> {
+    pub fn pair_verify(&mut self, secret_hex: &str) -> Result<(), Box<std::error::Error>> {
         // retrieve authentication keys from secret
         let secret = <[u8; ed25519_secret_key_size]>::from_hex(secret_hex)?;
         let mut auth_pub = [0u8; ed25519_public_key_size];
@@ -167,7 +172,7 @@ impl RTSPClient {
             .map(|_| ())
     }
 
-    pub fn auth_setup(&self) -> Result<(), Box<std::error::Error>> {
+    pub fn auth_setup(&mut self) -> Result<(), Box<std::error::Error>> {
         let mut pub_key = [0u8; ed25519_public_key_size];
         let mut secret: [u8; ed25519_secret_key_size] = random();
         unsafe { curve25519_dh_CalculatePublicKey(&mut pub_key[0], &mut secret[0]); }
@@ -181,17 +186,17 @@ impl RTSPClient {
             .map(|_| ())
     }
 
-    pub fn announce_sdp(&self, sdp: &str) -> Result<(), Box<std::error::Error>> {
+    pub fn announce_sdp(&mut self, sdp: &str) -> Result<(), Box<std::error::Error>> {
         self.exec_request("ANNOUNCE", Body::Text { content_type: "application/sdp", content: sdp }, vec!(), None).map(|_| ())
     }
 
-    pub fn setup(&self, control_port: u16, timing_port: u16) -> Result<Vec<(String, String)>, Box<std::error::Error>> {
+    pub fn setup(&mut self, control_port: u16, timing_port: u16) -> Result<Vec<(String, String)>, Box<std::error::Error>> {
         let transport = format!("RTP/AVP/UDP;unicast;interleaved=0-1;mode=record;control_port={};timing_port={}", control_port, timing_port);
         let (headers, _) = self.exec_request("SETUP", Body::None, vec!(("Transport", &transport)), None)?;
         let session = headers.iter().find(|header| header.0.to_lowercase() == "session").map(|header| header.1.as_str());
 
         if let Some(session) = session {
-            unsafe { (*self.c_handle).session = CString::new(session).unwrap().into_raw(); }
+            self.session = Some(session.to_owned());
             debug!("<------- : session:{}", session);
         } else {
             error!("no session in response");
@@ -201,8 +206,8 @@ impl RTSPClient {
         Ok(headers)
     }
 
-    pub fn record(&self, start_seq: u16, start_ts: u64) -> Result<Vec<(String, String)>, Box<std::error::Error>> {
-        if unsafe { (*self.c_handle).session.is_null() } {
+    pub fn record(&mut self, start_seq: u16, start_ts: u64) -> Result<Vec<(String, String)>, Box<std::error::Error>> {
+        if self.session.is_none() {
             error!("no session in progress");
             panic!("no session in progress");
         }
@@ -213,11 +218,11 @@ impl RTSPClient {
         self.exec_request("RECORD", Body::None, headers, None).map(|result| result.0)
     }
 
-    pub fn set_parameter(&self, param: &str) -> Result<(), Box<std::error::Error>> {
+    pub fn set_parameter(&mut self, param: &str) -> Result<(), Box<std::error::Error>> {
         self.exec_request("SET_PARAMETER", Body::Text { content_type: "text/parameters", content: param }, vec!(), None).map(|_| ())
     }
 
-    pub fn flush(&self, seq_number: u16, timestamp: u64) -> Result<(), Box<std::error::Error>> {
+    pub fn flush(&mut self, seq_number: u16, timestamp: u64) -> Result<(), Box<std::error::Error>> {
         let info = format!("seq={};rtptime={}", seq_number, timestamp);
         self.exec_request("FLUSH", Body::None, vec!(("RTP-Info", &info)), None).map(|_| ())
     }
@@ -225,18 +230,12 @@ impl RTSPClient {
     // bool rtspcl_set_daap(struct rtspcl_s *p, u32_t timestamp, int count, va_list args);
     // bool rtspcl_set_artwork(struct rtspcl_s *p, u32_t timestamp, char *content_type, int size, char *image);
 
-    pub fn add_exthds(&mut self, key: &str, data: &str) -> Result<(), Box<std::error::Error>> {
+    pub fn add_exthds(&mut self, key: &str, data: &str) {
         self.headers.push((key.to_owned(), data.to_owned()));
-
-        let success = unsafe { rtspcl_add_exthds(self.c_handle, CString::new(key).unwrap().into_raw(), CString::new(data).unwrap().into_raw()) };
-        if success { Ok(()) } else { panic!("Failed to add exthds") }
     }
 
-    pub fn mark_del_exthds(&mut self, key: &str) -> Result<(), Box<std::error::Error>> {
+    pub fn mark_del_exthds(&mut self, key: &str) {
         self.headers.retain(|header| header.0 != key);
-
-        let success = unsafe { rtspcl_mark_del_exthds(self.c_handle, CString::new(key).unwrap().into_raw()) };
-        if success { Ok(()) } else { panic!("Failed to del exthds") }
     }
 
     pub fn local_ip(&self) -> Result<String, Box<std::error::Error>> {
@@ -246,7 +245,7 @@ impl RTSPClient {
     // static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type,
     //                 char *content, int length, int get_response, key_data_t *hds,
     //                 key_data_t *rkd, char **resp_content, int *resp_len, char* url)
-    fn exec_request(&self, cmd: &str, body: Body, headers: Vec<(&str, &str)>, url: Option<&str>) -> Result<(Vec<(String, String)>, String), Box<std::error::Error>> {
+    fn exec_request(&mut self, cmd: &str, body: Body, headers: Vec<(&str, &str)>, url: Option<&str>) -> Result<(Vec<(String, String)>, String), Box<std::error::Error>> {
         // char line[2048];
         // char *req;
         // char buf[128];
@@ -257,153 +256,142 @@ impl RTSPClient {
         // struct pollfd pfds;
         // key_data_t lkd[MAX_KD], *pkd;
 
-        unsafe {
-            if (*self.c_handle).fd == -1 {
-                panic!("exec_request called without file descriptor");
-            }
-
-            // FIXME: Wait for "Normal data may be written without blocking."
-            // pfds.fd = rtspcld->fd;
-            // pfds.events = POLLOUT;
-            // i = poll(&pfds, 1, 0);
-            // if (i == -1 || (pfds.revents & POLLERR) || (pfds.revents & POLLHUP)) return false;
-
-            let mut req = Vec::new();
-
-            let url = url.unwrap_or_else(|| {
-                CStr::from_ptr(&(*self.c_handle).url[0]).to_str().unwrap()
-            });
-
-            write!(&mut req, "{} {} RTSP/1.0\r\n", cmd, url)?;
-
-            for (key, value) in &headers {
-                write!(&mut req, "{}: {}\r\n", key, value)?;
-            }
-
-            if let Body::Text { ref content_type, ref content } = body {
-                write!(&mut req, "Content-Type: {}\r\n", content_type)?;
-                write!(&mut req, "Content-Length: {}\r\n", content.len())?;
-            }
-
-            if let Body::Blob { ref content_type, ref content } = body {
-                write!(&mut req, "Content-Type: {}\r\n", content_type)?;
-                write!(&mut req, "Content-Length: {}\r\n", content.len())?;
-            }
-
-            (*self.c_handle).cseq += 1;
-            write!(&mut req, "CSeq: {}\r\n", (*self.c_handle).cseq)?;
-
-            let useragent = CStr::from_ptr((*self.c_handle).useragent).to_str().unwrap();
-            write!(&mut req, "User-Agent: {}\r\n", useragent)?;
-
-            for (key, value) in &self.headers {
-                write!(&mut req, "{}: {}\r\n", key, value)?;
-            }
-
-            if !(*self.c_handle).session.is_null() {
-                let session = CStr::from_ptr((*self.c_handle).session).to_str().unwrap();
-                write!(&mut req, "Session: {}\r\n", session)?;
-            }
-
-            write!(&mut req, "\r\n")?;
-
-            if let Body::Text { content_type: _, ref content } = body {
-                write!(&mut req, "{}", content)?;
-            }
-
-            if let Body::Blob { content_type: _, ref content } = body {
-                req.extend_from_slice(content);
-            }
-
-            let len = req.len();
-            let rval = send((*self.c_handle).fd, CString::new(req.clone()).unwrap().into_raw() as *const c_void, len, 0);
-
-            match body {
-                Body::Text { content_type: _, content: _ } => debug!("----> : write {}", from_utf8(&req).unwrap()),
-                Body::Blob { content_type: _, content: _ } => debug!("----> : send binary request"),
-                Body::None => debug!("----> : write {}", from_utf8(&req).unwrap()),
-            }
-
-            if rval != len as isize {
-                error!("couldn't write request ({}!={})", rval, len);
-            }
-
-            let mut timeout = 10000;
-            let mut line_buffer = [0i8; 2048];
-
-            {
-                let n = read_line((*self.c_handle).fd, (&mut line_buffer[0]) as *mut i8, line_buffer.len() as i32, timeout, 0);
-                if n <= 0 { panic!("request failed"); }
-                let line = CStr::from_ptr(&line_buffer[0]).to_str().unwrap();
-
-                let status = line.splitn(3, ' ').skip(1).next().unwrap();
-
-                if status != "200" {
-                    error!("<------ : request failed, error {}", line);
-                    panic!("request failed");
-                } else {
-                    debug!("<------ : {}: request ok", status);
-                }
-            }
-
-            let mut response_headers: Vec<(String, String)> = vec!();
-            let mut response_content_length: usize = 0;
-
-            loop {
-                let n = read_line((*self.c_handle).fd, (&mut line_buffer[0]) as *mut i8, line_buffer.len() as i32, timeout, 0);
-                if n < 0 { panic!("request failed"); }
-                if n == 0 { break; }
-                let line = CStr::from_ptr(&line_buffer[0]).to_str().unwrap();
-
-                debug!("<------ : {}", line);
-                timeout = 1000; // once it started, it shouldn't take a long time
-
-                let mut parts = line.splitn(2, ':').map(|part| part.trim());
-                let key = parts.next().unwrap().to_owned();
-                let value = parts.next().unwrap().to_owned();
-
-                if key.to_lowercase() == "content-length" {
-                    response_content_length = value.parse().unwrap();
-                }
-
-                response_headers.push((key, value));
-            }
-
-            if response_content_length == 0 {
-                return Ok((response_headers, String::new()));
-            }
-
-            let data = malloc(response_content_length) as *mut u8;
-            let mut size: usize = 0;
-
-            while size < response_content_length {
-                let bytes = recv((*self.c_handle).fd, data.offset(size as isize) as *mut c_void, response_content_length - size, 0);
-                if bytes <= 0 { break; }
-                size += bytes as usize;
-            }
-
-            if size != response_content_length {
-                error!("content length receive error {}!={}", size, response_content_length);
-                panic!("content length receive error");
-            }
-
-            let response_content = CStr::from_ptr(data as *const i8).to_str()?.to_owned();
-            free(data as *mut c_void);
-
-            info!("Body data {}, {}", response_content_length, response_content);
-
-            Ok((response_headers, response_content))
+        if self.fd == -1 {
+            panic!("exec_request called without file descriptor");
         }
+
+        // FIXME: Wait for "Normal data may be written without blocking."
+        // pfds.fd = rtspcld->fd;
+        // pfds.events = POLLOUT;
+        // i = poll(&pfds, 1, 0);
+        // if (i == -1 || (pfds.revents & POLLERR) || (pfds.revents & POLLHUP)) return false;
+
+        let mut req = Vec::new();
+
+        // let url = url.unwrap_or_else(|| self.url.unwrap().as_str());
+        let url = if let Some(url) = url { url } else if let Some(ref url) = self.url { url.as_str() } else { panic!("") };
+
+        write!(&mut req, "{} {} RTSP/1.0\r\n", cmd, url)?;
+
+        for (key, value) in &headers {
+            write!(&mut req, "{}: {}\r\n", key, value)?;
+        }
+
+        if let Body::Text { ref content_type, ref content } = body {
+            write!(&mut req, "Content-Type: {}\r\n", content_type)?;
+            write!(&mut req, "Content-Length: {}\r\n", content.len())?;
+        }
+
+        if let Body::Blob { ref content_type, ref content } = body {
+            write!(&mut req, "Content-Type: {}\r\n", content_type)?;
+            write!(&mut req, "Content-Length: {}\r\n", content.len())?;
+        }
+
+        self.cseq += 1;
+        write!(&mut req, "CSeq: {}\r\n", self.cseq)?;
+        write!(&mut req, "User-Agent: {}\r\n", self.user_agent)?;
+
+        for (key, value) in &self.headers {
+            write!(&mut req, "{}: {}\r\n", key, value)?;
+        }
+
+        if let Some(ref session) = self.session {
+            write!(&mut req, "Session: {}\r\n", session)?;
+        }
+
+        write!(&mut req, "\r\n")?;
+
+        if let Body::Text { content_type: _, ref content } = body {
+            write!(&mut req, "{}", content)?;
+        }
+
+        if let Body::Blob { content_type: _, ref content } = body {
+            req.extend_from_slice(content);
+        }
+
+        let len = req.len();
+        let rval = unsafe { send(self.fd, CString::new(req.clone()).unwrap().into_raw() as *const c_void, len, 0) };
+
+        match body {
+            Body::Text { content_type: _, content: _ } => debug!("----> : write {}", from_utf8(&req).unwrap()),
+            Body::Blob { content_type: _, content: _ } => debug!("----> : send binary request"),
+            Body::None => debug!("----> : write {}", from_utf8(&req).unwrap()),
+        }
+
+        if rval != len as isize {
+            error!("couldn't write request ({}!={})", rval, len);
+        }
+
+        let mut timeout = 10000;
+        let mut line_buffer = [0i8; 2048];
+
+        {
+            let n = unsafe { read_line(self.fd, (&mut line_buffer[0]) as *mut i8, line_buffer.len() as i32, timeout, 0) };
+            if n <= 0 { panic!("request failed"); }
+            let line = unsafe { CStr::from_ptr(&line_buffer[0]).to_str().unwrap() };
+
+            let status = line.splitn(3, ' ').skip(1).next().unwrap();
+
+            if status != "200" {
+                error!("<------ : request failed, error {}", line);
+                panic!("request failed");
+            } else {
+                debug!("<------ : {}: request ok", status);
+            }
+        }
+
+        let mut response_headers: Vec<(String, String)> = vec!();
+        let mut response_content_length: usize = 0;
+
+        loop {
+            let n = unsafe { read_line(self.fd, (&mut line_buffer[0]) as *mut i8, line_buffer.len() as i32, timeout, 0) };
+            if n < 0 { panic!("request failed"); }
+            if n == 0 { break; }
+            let line = unsafe { CStr::from_ptr(&line_buffer[0]).to_str().unwrap() };
+
+            debug!("<------ : {}", line);
+            timeout = 1000; // once it started, it shouldn't take a long time
+
+            let mut parts = line.splitn(2, ':').map(|part| part.trim());
+            let key = parts.next().unwrap().to_owned();
+            let value = parts.next().unwrap().to_owned();
+
+            if key.to_lowercase() == "content-length" {
+                response_content_length = value.parse().unwrap();
+            }
+
+            response_headers.push((key, value));
+        }
+
+        if response_content_length == 0 {
+            return Ok((response_headers, String::new()));
+        }
+
+        let data = unsafe { malloc(response_content_length) as *mut u8 };
+        let mut size: usize = 0;
+
+        while size < response_content_length {
+            let bytes = unsafe { recv(self.fd, data.offset(size as isize) as *mut c_void, response_content_length - size, 0) };
+            if bytes <= 0 { break; }
+            size += bytes as usize;
+        }
+
+        if size != response_content_length {
+            error!("content length receive error {}!={}", size, response_content_length);
+            panic!("content length receive error");
+        }
+
+        let response_content = unsafe { CStr::from_ptr(data as *const i8).to_str()?.to_owned() };
+        unsafe { free(data as *mut c_void); }
+
+        info!("Body data {}, {}", response_content_length, response_content);
+
+        Ok((response_headers, response_content))
     }
 }
 
 impl Drop for RTSPClient {
     fn drop(&mut self) {
-        unsafe { rtspcl_remove_all_exthds(self.c_handle); }
-
-        let result = self._disconnect();
-        unsafe { free(((*self.c_handle).session) as *mut c_void); }
-        unsafe { free(self.c_handle as *mut c_void); }
-        result.unwrap();
+        self._disconnect().unwrap();
     }
 }

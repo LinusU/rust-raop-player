@@ -168,8 +168,6 @@ impl RaopClient {
         };
 
         let rtsp_client = RTSPClient::new("iTunes/7.6.2 (Windows; N;)");
-        if rtsp_client.is_none() { error!("Cannot create RTSP context"); return None; }
-        let rtsp_client = rtsp_client.unwrap();
 
         let mut codec = codec;
         let mut alac_codec: Option<AlacEncoder>;
@@ -678,7 +676,7 @@ impl RaopClient {
         {
             // RTSP misc setup
             let mut rtsp_client = self.rtsp_client.lock().unwrap();
-            rtsp_client.add_exthds("Client-Instance", &sci)?;
+            rtsp_client.add_exthds("Client-Instance", &sci);
             // FIXME:
             // if self.DACP_id[0] != 0 { rtspcl_add_eself.((*s_elient..cnew("DACP-ID").unwrap().into_raw(), self.DACP_id); }
             // if self.active_remote[0] != 0 { rtspclself.esel.f_ient((.s_elient.new("Active-Remote").unwrap().into_raw(), self.active_remote)?;
@@ -796,7 +794,7 @@ impl RaopClient {
 
         self._terminate_rtp()?;
 
-        let rtsp_client = self.rtsp_client.lock().unwrap();
+        let mut rtsp_client = self.rtsp_client.lock().unwrap();
         let success1 = rtsp_client.flush(status.seq_number + 1, status.head_ts + 1);
 
         success1?;
