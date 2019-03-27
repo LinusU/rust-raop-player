@@ -52,6 +52,40 @@ unsafe fn any_as_u8_mut_slice<T: Sized>(p: &mut T) -> &mut [u8] {
     )
 }
 
+pub fn analyse_setup(setup_headers: Vec<(String, String)>) -> Result<(u16, u16, u16), Box<std::error::Error>> {
+    // get transport (port ...) info
+    let transport_header = setup_headers.iter().find(|header| header.0.to_lowercase() == "transport").map(|header| header.1.as_str());
+
+    if transport_header.is_none() {
+        error!("no transport in response");
+        panic!("no transport in response");
+    }
+
+    let mut audio_port: u16 = 0;
+    let mut ctrl_port: u16 = 0;
+    let mut time_port: u16 = 0;
+
+    for token in transport_header.unwrap().split(';') {
+        match token.split('=').collect::<Vec<&str>>().as_slice() {
+            ["server_port", port] => audio_port = port.parse()?,
+            ["control_port", port] => ctrl_port = port.parse()?,
+            ["timing_port", port] => time_port = port.parse()?,
+            _ => {},
+        }
+    }
+
+    if audio_port == 0 || ctrl_port == 0 {
+        error!("missing a RTP port in response");
+        panic!("missing a RTP port in response");
+    }
+
+    if time_port == 0 {
+        info!("missing timing port, will get it later");
+    }
+
+    Ok((audio_port, ctrl_port, time_port))
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum Codec {
     PCM = 0,
@@ -148,15 +182,14 @@ pub struct RaopClient {
 unsafe impl Send for RaopClient {}
 
 impl RaopClient {
-    pub fn new(local_addr: Ipv4Addr, codec: Codec, chunk_length: u32, latency_frames: u32, crypto: Crypto, auth: bool, secret: Option<&str>, et: Option<&str>, md: Option<&str>, sample_rate: u32, sample_size: u32, channels: u8, volume: f32, remote_addr: Ipv4Addr, rtsp_port: u16) -> Option<RaopClient> {
+    pub fn connect(local_addr: Ipv4Addr, codec: Codec, chunk_length: u32, latency_frames: u32, crypto: Crypto, auth: bool, secret: Option<&str>, et: Option<&str>, md: Option<&str>, sample_rate: u32, sample_size: u32, channels: u8, volume: f32, remote_addr: Ipv4Addr, rtsp_port: u16, set_volume: bool) -> Result<RaopClient, Box<std::error::Error>> {
         if chunk_length > MAX_SAMPLES_PER_CHUNK {
-            error!("Chunk length must below {}", MAX_SAMPLES_PER_CHUNK);
-            return None;
+            panic!("Chunk length must below {}", MAX_SAMPLES_PER_CHUNK);
         }
 
         let secret = secret.map(|s| s.to_owned());
         let et = et.map(|s| s.to_owned());
-        let latency_frames = std::cmp::max(latency_frames, RAOP_LATENCY_MIN);
+        let mut latency_frames = std::cmp::max(latency_frames, RAOP_LATENCY_MIN);
 
         // strcpy(raopcld->DACP_id, DACP_id ? DACP_id : "");
         // strcpy(raopcld->active_remote, active_remote ? active_remote : "");
@@ -167,7 +200,7 @@ impl RaopClient {
             progress: md.map(|md| md.contains('2')).unwrap_or(false),
         };
 
-        let rtsp_client = RTSPClient::new("iTunes/7.6.2 (Windows; N;)");
+        let mut rtsp_client = RTSPClient::new("iTunes/7.6.2 (Windows; N;)");
 
         let mut codec = codec;
         let mut alac_codec: Option<AlacEncoder>;
@@ -192,7 +225,195 @@ impl RaopClient {
 
         unsafe { aes_set_key(&mut ctx, &mut key[0], 128); }
 
-        Some(RaopClient {
+        let retransmit_mutex = Arc::new(Mutex::new(0));
+
+        let sane_mutex = Arc::new(Mutex::new(raopcl_s__bindgen_ty_1 {
+            ctrl: 0,
+            time: 0,
+            audio: raopcl_s__bindgen_ty_1__bindgen_ty_1 { avail: 0, select: 0, send: 0 },
+        }));
+
+        let seed_sid: u32 = random();
+        let seed_sci: u64 = random();
+
+        let sid = format!("{:010}", seed_sid); // sprintf(sid, "%010lu", (long unsigned int) seed.sid);
+        let sci = format!("{:016x}", seed_sci); // sprintf(sci, "%016llx", (long long int) seed.sci);
+
+        // RTSP misc setup
+        rtsp_client.add_exthds("Client-Instance", &sci);
+        // FIXME:
+        // if self.DACP_id[0] != 0 { rtspcl_add_eself.((*s_elient..cnew("DACP-ID").unwrap().into_raw(), self.DACP_id); }
+        // if self.active_remote[0] != 0 { rtspclself.esel.f_ient((.s_elient.new("Active-Remote").unwrap().into_raw(), self.active_remote)?;
+
+        rtsp_client.connect(local_addr.into(), remote_addr, rtsp_port, &sid)?;
+
+        info!("local interface {}", rtsp_client.local_ip()?);
+
+        // RTSP pairing verify for AppleTV
+        if let Some(ref secret) = secret {
+            rtsp_client.pair_verify(secret)?;
+        }
+
+        // Send pubkey for MFi devices
+        if et.as_ref().map(|et| et.contains('4')).unwrap_or(false) {
+            rtsp_client.auth_setup()?;
+        }
+
+        let mut sdp = format!(
+            "v=0\r\no=iTunes {} 0 IN IP4 {}\r\ns=iTunes\r\nc=IN IP4 {}\r\nt=0 0\r\n",
+            sid,
+            rtsp_client.local_ip()?,
+            remote_addr,
+        );
+
+        match codec {
+            Codec::ALACRaw => {
+                sdp.push_str(format!(
+                    "m=audio 0 RTP/AVP 96\r\na=rtpmap:96 AppleLossless\r\na=fmtp:96 {}d 0 {} 40 10 14 {} 255 0 0 {}\r\n",
+                    chunk_length,
+                    sample_size,
+                    channels,
+                    sample_rate,
+                ).as_str());
+            },
+            Codec::ALAC => {
+                sdp.push_str(format!(
+                    "m=audio 0 RTP/AVP 96\r\na=rtpmap:96 AppleLossless\r\na=fmtp:96 {}d 0 {} 40 10 14 {} 255 0 0 {}\r\n",
+                    chunk_length,
+                    sample_size,
+                    channels,
+                    sample_rate,
+                ).as_str());
+            },
+            Codec::PCM => {
+                sdp.push_str(format!(
+                    "m=audio 0 RTP/AVP 96\r\na=rtpmap:96 L{}/{}/{}\r\n",
+                    sample_size,
+                    sample_rate,
+                    channels,
+                ).as_str());
+            },
+            Codec::AAC => panic!("Not implemented"),
+            Codec::AALELC => panic!("Not implemented"),
+        }
+
+        match crypto {
+            Crypto::Clear => {},
+            Crypto::RSA => {
+                // char *key = NULL, *iv = NULL, *buf;
+                // u8_t rsakey[512];
+                // int i;
+                //
+                // i = rsa_encrypt(p->key, 16, rsakey);
+                // base64_encode(rsakey, i, &key);
+                // remove_char_from_string(key, '=');
+                // base64_encode(p->iv, 16, &iv);
+                // remove_char_from_string(iv, '=');
+                // buf = malloc(strlen(key) + strlen(iv) + 128);
+                // sprintf(buf, "a=rsaaeskey:%s\r\n"
+                //             "a=aesiv:%s\r\n",
+                //             key, iv);
+                // strcat(sdp, buf);
+                // free(key);
+                // free(iv);
+                // free(buf);
+                // break;
+                panic!("unsupported encryption: RSA")
+            },
+            Crypto::FairPlay => panic!("unsupported encryption: FairPlay"),
+            Crypto::FairPlaySAP => panic!("unsupported encryption: FairPlaySAP"),
+            Crypto::MFiSAP => panic!("unsupported encryption: MFiSAP"),
+        }
+
+        // AppleTV expects now the timing port ot be opened BEFORE the setup message
+        let rtp_time = UdpSocket::bind((local_addr, 0))?;
+        let local_time_port = rtp_time.local_addr()?.port();
+        let rtp_time_mutex = Arc::new(Mutex::new(Some(rtp_time)));
+
+        let time_running_mutex = Arc::new(AtomicBool::new(true));
+        let time_thread_mutex = {
+            let time_running_ref = Arc::clone(&time_running_mutex);
+            let rtp_time_ref = Arc::clone(&rtp_time_mutex);
+
+            Arc::new(Mutex::new(Some(thread::spawn(move || { _rtp_timing_thread(time_running_ref, rtp_time_ref); }))))
+        };
+
+        // RTSP ANNOUNCE
+        if auth && crypto != Crypto::Clear {
+            panic!("Not implemented");
+            // let seed_sac: [u8; 16] = random();
+            // base64_encode(&seed.sac, 16, &sac);
+            // remove_char_from_string(sac, '=');
+            // rtsp_client.add_exthds("Apple-Challenge", &sac)?;
+            // rtsp_client.announce_sdp(&sdp)?;
+            // rtsp_client.mark_del_exthds("Apple-Challenge")?;
+        } else {
+            rtsp_client.announce_sdp(&sdp)?;
+        }
+
+        // open RTP sockets, need local ports here before sending SETUP
+        let rtp_ctrl = UdpSocket::bind((local_addr, 0))?;
+        let local_ctrl_port = rtp_ctrl.local_addr()?.port();
+
+        let rtp_audio = UdpSocket::bind((local_addr, 0))?;
+        let local_audio_port = rtp_audio.local_addr()?.port();
+
+        // RTSP SETUP : get all RTP destination ports
+        let setup_headers = rtsp_client.setup(local_ctrl_port, local_time_port)?;
+        let (remote_audio_port, remote_ctrl_port, remote_time_port) = analyse_setup(setup_headers)?;
+
+        debug!("opened audio socket   l:{:05} r:{}", local_audio_port, remote_audio_port);
+        debug!("opened timing socket  l:{:05} r:{}", local_time_port, remote_time_port);
+        debug!("opened control socket l:{:05} r:{}", local_ctrl_port, remote_ctrl_port);
+
+        rtp_audio.connect((remote_addr, remote_audio_port))?;
+        rtp_ctrl.connect((remote_addr, remote_ctrl_port))?;
+
+        let rtp_ctrl_mutex = Arc::new(Mutex::new(Some(rtp_ctrl)));
+        let rtp_audio_mutex = Arc::new(Mutex::new(Some(rtp_audio)));
+
+        let status = Status {
+            state: raop_states_s_RAOP_DOWN,
+            seq_number: random(),
+            head_ts: 0,
+            pause_ts: 0,
+            start_ts: 0,
+            first_ts: 0,
+            first_pkt: false,
+            flushing: true,
+            backlog: [raopcl_s__bindgen_ty_2 { seq_number: 0, timestamp: 0, size: 0, buffer: ptr::null_mut() }; 512usize],
+        };
+
+        let record_headers = rtsp_client.record(status.seq_number + 1, NTP2TS(safe_get_ntp(), sample_rate))?;
+        let returned_latency = record_headers.iter().find(|header| header.0.to_lowercase() == "audio-latency").map(|header| header.1.as_str());
+
+        if let Some(returned_latency) = returned_latency {
+            let latency: u32 = returned_latency.parse()?;
+            if latency > latency_frames { latency_frames = latency; }
+        }
+
+        let status_mutex = Arc::new(Mutex::new(status));
+        let latency_frames_mutex = Arc::new(Mutex::new(latency_frames));
+
+        let ctrl_running_mutex = Arc::new(AtomicBool::new(true));
+        let ctrl_thread_mutex = {
+            let ctrl_running_ref = Arc::clone(&ctrl_running_mutex);
+            let rtp_ctrl_ref = Arc::clone(&rtp_ctrl_mutex);
+            let status_ref = Arc::clone(&status_mutex);
+            let sane_ref = Arc::clone(&sane_mutex);
+            let retransmit_ref = Arc::clone(&retransmit_mutex);
+            let latency_frames_ref = Arc::clone(&latency_frames_mutex);
+
+            Arc::new(Mutex::new(Some(thread::spawn(move || { _rtp_control_thread(ctrl_running_ref, rtp_ctrl_ref, status_ref, sane_ref, retransmit_ref, latency_frames_ref, sample_rate); }))))
+        };
+
+        {
+            // as connect might take time, state might already have been set
+            let mut status = status_mutex.lock().unwrap();
+            if status.state == raop_states_s_RAOP_DOWN { status.state = raop_states_s_RAOP_FLUSHED; }
+        }
+
+        let client = RaopClient {
             // Immutable properties
             remote_addr,
             local_addr,
@@ -209,44 +430,36 @@ impl RaopClient {
             et,
 
             // Mutable properties
-            rtp_time: Arc::new(Mutex::new(None)),
-            rtp_ctrl: Arc::new(Mutex::new(None)),
-            rtp_audio: Arc::new(Mutex::new(None)),
+            rtp_time: rtp_time_mutex,
+            rtp_ctrl: rtp_ctrl_mutex,
+            rtp_audio: rtp_audio_mutex,
 
-            sane: Arc::new(Mutex::new(raopcl_s__bindgen_ty_1 {
-                ctrl: 0,
-                time: 0,
-                audio: raopcl_s__bindgen_ty_1__bindgen_ty_1 { avail: 0, select: 0, send: 0 },
-            })),
+            sane: sane_mutex,
 
-            retransmit: Arc::new(Mutex::new(0)),
-            ssrc: Arc::new(Mutex::new(0)),
+            retransmit: retransmit_mutex,
+            ssrc: Arc::new(Mutex::new(random())),
 
-            status: Arc::new(Mutex::new(Status {
-                state: raop_states_s_RAOP_DOWN,
-                seq_number: random(),
-                head_ts: 0,
-                pause_ts: 0,
-                start_ts: 0,
-                first_ts: 0,
-                first_pkt: false,
-                flushing: true,
-                backlog: [raopcl_s__bindgen_ty_2 { seq_number: 0, timestamp: 0, size: 0, buffer: ptr::null_mut() }; 512usize],
-            })),
+            status: status_mutex,
 
-            latency_frames: Arc::new(Mutex::new(latency_frames)),
+            latency_frames: latency_frames_mutex,
             volume: Arc::new(Mutex::new(volume)),
 
             aes: Arc::new(Mutex::new(AesContext { ctx, iv, nv, key })),
 
-            time_running: Arc::new(AtomicBool::new(false)),
-            time_thread: Arc::new(Mutex::new(None)),
-            ctrl_running: Arc::new(AtomicBool::new(false)),
-            ctrl_thread: Arc::new(Mutex::new(None)),
+            time_running: time_running_mutex,
+            time_thread: time_thread_mutex,
+            ctrl_running: ctrl_running_mutex,
+            ctrl_thread: ctrl_thread_mutex,
 
             alac_codec: Arc::new(Mutex::new(alac_codec)),
             rtsp_client: Arc::new(Mutex::new(rtsp_client)),
-        })
+        };
+
+        if set_volume {
+            client._set_volume()?;
+        }
+
+        Ok(client)
     }
 
     pub fn float_volume(vol: u8) -> f32 {
@@ -547,242 +760,6 @@ impl RaopClient {
         if (vol < -30.0 || vol > 0.0) && vol != -144.0 { panic!("Invalid volume"); }
         *self.volume.lock().unwrap() = vol;
         return self._set_volume();
-    }
-
-    pub fn set_sdp(&self, sdp: &mut String) {
-        match self.codec {
-            Codec::ALACRaw => {
-                sdp.push_str(format!(
-                    "m=audio 0 RTP/AVP 96\r\na=rtpmap:96 AppleLossless\r\na=fmtp:96 {}d 0 {} 40 10 14 {} 255 0 0 {}\r\n",
-                    self.chunk_length,
-                    self.sample_size,
-                    self.channels,
-                    self.sample_rate,
-                ).as_str());
-            },
-            Codec::ALAC => {
-                sdp.push_str(format!(
-                    "m=audio 0 RTP/AVP 96\r\na=rtpmap:96 AppleLossless\r\na=fmtp:96 {}d 0 {} 40 10 14 {} 255 0 0 {}\r\n",
-                    self.chunk_length,
-                    self.sample_size,
-                    self.channels,
-                    self.sample_rate,
-                ).as_str());
-            },
-            Codec::PCM => {
-                sdp.push_str(format!(
-                    "m=audio 0 RTP/AVP 96\r\na=rtpmap:96 L{}/{}/{}\r\n",
-                    self.sample_size,
-                    self.sample_rate,
-                    self.channels,
-                ).as_str());
-            },
-            Codec::AAC => panic!("Not implemented"),
-            Codec::AALELC => panic!("Not implemented"),
-        }
-
-        match self.crypto {
-            Crypto::Clear => {},
-            Crypto::RSA => {
-                // char *key = NULL, *iv = NULL, *buf;
-                // u8_t rsakey[512];
-                // int i;
-                //
-                // i = rsa_encrypt(p->key, 16, rsakey);
-                // base64_encode(rsakey, i, &key);
-                // remove_char_from_string(key, '=');
-                // base64_encode(p->iv, 16, &iv);
-                // remove_char_from_string(iv, '=');
-                // buf = malloc(strlen(key) + strlen(iv) + 128);
-                // sprintf(buf, "a=rsaaeskey:%s\r\n"
-                //             "a=aesiv:%s\r\n",
-                //             key, iv);
-                // strcat(sdp, buf);
-                // free(key);
-                // free(iv);
-                // free(buf);
-                // break;
-                panic!("unsupported encryption: RSA")
-            },
-            Crypto::FairPlay => panic!("unsupported encryption: FairPlay"),
-            Crypto::FairPlaySAP => panic!("unsupported encryption: FairPlaySAP"),
-            Crypto::MFiSAP => panic!("unsupported encryption: MFiSAP"),
-        }
-    }
-
-    pub fn analyse_setup(&self, setup_headers: Vec<(String, String)>) -> Result<(u16, u16, u16), Box<std::error::Error>> {
-        // get transport (port ...) info
-        let transport_header = setup_headers.iter().find(|header| header.0.to_lowercase() == "transport").map(|header| header.1.as_str());
-
-        if transport_header.is_none() {
-            error!("no transport in response");
-            panic!("no transport in response");
-        }
-
-        let mut audio_port: u16 = 0;
-        let mut ctrl_port: u16 = 0;
-        let mut time_port: u16 = 0;
-
-        for token in transport_header.unwrap().split(';') {
-            match token.split('=').collect::<Vec<&str>>().as_slice() {
-                ["server_port", port] => audio_port = port.parse()?,
-                ["control_port", port] => ctrl_port = port.parse()?,
-                ["timing_port", port] => time_port = port.parse()?,
-                _ => {},
-            }
-        }
-
-        if audio_port == 0 || ctrl_port == 0 {
-            error!("missing a RTP port in response");
-            panic!("missing a RTP port in response");
-        }
-
-        if time_port == 0 {
-            info!("missing timing port, will get it later");
-        }
-
-        Ok((audio_port, ctrl_port, time_port))
-    }
-
-    pub fn connect(&mut self, set_volume: bool) -> Result<(), Box<std::error::Error>> {
-        {
-            let status = self.status.lock().unwrap();
-
-            if status.state != raop_states_s_RAOP_DOWN {
-                return Ok(());
-            }
-        }
-
-        *self.ssrc.lock().unwrap() = random();
-        *self.retransmit.lock().unwrap() = 0;
-
-        {
-            let mut sane = self.sane.lock().unwrap();
-
-            sane.ctrl = 0;
-            sane.time = 0;
-            sane.audio.avail = 0;
-            sane.audio.select = 0;
-            sane.audio.send = 0;
-        }
-
-        let seed_sid: u32 = random();
-        let seed_sci: u64 = random();
-
-        let sid = format!("{:010}", seed_sid); // sprintf(sid, "%010lu", (long unsigned int) seed.sid);
-        let sci = format!("{:016x}", seed_sci); // sprintf(sci, "%016llx", (long long int) seed.sci);
-
-        // This block holds the rtsp_client lock
-        {
-            // RTSP misc setup
-            let mut rtsp_client = self.rtsp_client.lock().unwrap();
-            rtsp_client.add_exthds("Client-Instance", &sci);
-            // FIXME:
-            // if self.DACP_id[0] != 0 { rtspcl_add_eself.((*s_elient..cnew("DACP-ID").unwrap().into_raw(), self.DACP_id); }
-            // if self.active_remote[0] != 0 { rtspclself.esel.f_ient((.s_elient.new("Active-Remote").unwrap().into_raw(), self.active_remote)?;
-
-            rtsp_client.connect(self.local_addr.into(), self.remote_addr, self.rtsp_port, &sid)?;
-
-            info!("local interface {}", rtsp_client.local_ip()?);
-
-            // RTSP pairing verify for AppleTV
-            if let Some(ref secret) = self.secret {
-                rtsp_client.pair_verify(secret)?;
-            }
-
-            // Send pubkey for MFi devices
-            if self.et.as_ref().map(|et| et.contains('4')).unwrap_or(false) {
-                rtsp_client.auth_setup()?;
-            }
-
-            let mut sdp = format!(
-                "v=0\r\no=iTunes {} 0 IN IP4 {}\r\ns=iTunes\r\nc=IN IP4 {}\r\nt=0 0\r\n",
-                sid,
-                rtsp_client.local_ip()?,
-                self.remote_addr,
-            );
-
-            self.set_sdp(&mut sdp);
-
-            // AppleTV expects now the timing port ot be opened BEFORE the setup message
-            *self.rtp_time.lock().unwrap() = Some(UdpSocket::bind((self.local_addr, 0))?);
-            let local_time_port = (*self.rtp_time.lock().unwrap()).as_ref().unwrap().local_addr()?.port();
-
-            {
-                let time_running = self.time_running.clone();
-                let socket = self.rtp_time.clone();
-
-                self.time_running.store(true, Ordering::Relaxed);
-                *self.time_thread.lock().unwrap() = Some(thread::spawn(move || { _rtp_timing_thread(time_running, socket); }));
-            }
-
-            // RTSP ANNOUNCE
-            if self.auth && self.crypto != Crypto::Clear {
-                panic!("Not implemented");
-                // let seed_sac: [u8; 16] = random();
-                // base64_encode(&seed.sac, 16, &sac);
-                // remove_char_from_string(sac, '=');
-                // rtsp_client.add_exthds("Apple-Challenge", &sac)?;
-                // rtsp_client.announce_sdp(&sdp)?;
-                // rtsp_client.mark_del_exthds("Apple-Challenge")?;
-            } else {
-                rtsp_client.announce_sdp(&sdp)?;
-            }
-
-            // open RTP sockets, need local ports here before sending SETUP
-            *self.rtp_ctrl.lock().unwrap() = Some(UdpSocket::bind((self.local_addr, 0))?);
-            let local_ctrl_port = (*self.rtp_ctrl.lock().unwrap()).as_ref().unwrap().local_addr()?.port();
-
-            *self.rtp_audio.lock().unwrap() = Some(UdpSocket::bind((self.local_addr, 0))?);
-            let local_audio_port = (*self.rtp_audio.lock().unwrap()).as_ref().unwrap().local_addr()?.port();
-
-            // RTSP SETUP : get all RTP destination ports
-            let setup_headers = rtsp_client.setup(local_ctrl_port, local_time_port)?;
-            let (remote_audio_port, remote_ctrl_port, remote_time_port) = self.analyse_setup(setup_headers)?;
-
-            debug!("opened audio socket   l:{:05} r:{}", local_audio_port, remote_audio_port);
-            debug!("opened timing socket  l:{:05} r:{}", local_time_port, remote_time_port);
-            debug!("opened control socket l:{:05} r:{}", local_ctrl_port, remote_ctrl_port);
-
-            (*self.rtp_audio.lock().unwrap()).as_ref().unwrap().connect((self.remote_addr, remote_audio_port))?;
-            (*self.rtp_ctrl.lock().unwrap()).as_ref().unwrap().connect((self.remote_addr, remote_ctrl_port))?;
-
-            let status = self.status.lock().unwrap();
-            let record_headers = rtsp_client.record(status.seq_number + 1, NTP2TS(safe_get_ntp(), self.sample_rate))?;
-            let returned_latency = record_headers.iter().find(|header| header.0.to_lowercase() == "audio-latency").map(|header| header.1.as_str());
-
-            if let Some(returned_latency) = returned_latency {
-                let latency: u32 = returned_latency.parse()?;
-                let mut latency_frames = self.latency_frames.lock().unwrap();
-
-                if latency > *latency_frames { *latency_frames = latency; }
-            }
-        }
-
-        {
-            let running = Arc::clone(&self.ctrl_running);
-            let socket_mutex = Arc::clone(&self.rtp_ctrl);
-            let status_mutex = Arc::clone(&self.status);
-            let sane_mutex = Arc::clone(&self.sane);
-            let retransmit_mutex = Arc::clone(&self.retransmit);
-            let latency_frames_mutex = Arc::clone(&self.latency_frames);
-            let sample_rate = self.sample_rate;
-
-            self.ctrl_running.store(true, Ordering::Relaxed);
-            *self.ctrl_thread.lock().unwrap() = Some(thread::spawn(move || { _rtp_control_thread(running, socket_mutex, status_mutex, sane_mutex, retransmit_mutex, latency_frames_mutex, sample_rate); }));
-        }
-
-        {
-            // as connect might take time, state might already have been set
-            let mut status = self.status.lock().unwrap();
-            if status.state == raop_states_s_RAOP_DOWN { status.state = raop_states_s_RAOP_FLUSHED; }
-        }
-
-        if set_volume {
-            self._set_volume()?;
-        }
-
-        Ok(())
     }
 
     fn _disconnect(&self, force: bool) -> Result<(), Box<std::error::Error>> {

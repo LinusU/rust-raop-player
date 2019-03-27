@@ -108,11 +108,9 @@ fn main() -> Result<(), Box<std::error::Error>> {
     let volume = RaopClient::float_volume(args.flag_v);
     let mut infile = open_file(args.arg_filename);
 
-    let mut raopcl = RaopClient::new(host, codec, MAX_SAMPLES_PER_CHUNK, args.flag_l, crypto, false, None, None, None, 44100, 16, 2, volume, args.arg_server_ip, args.flag_p).unwrap();
+    let mut raopcl = RaopClient::connect(host, codec, MAX_SAMPLES_PER_CHUNK, args.flag_l, crypto, false, None, None, None, 44100, 16, 2, volume, args.arg_server_ip, args.flag_p, true).unwrap();
 
     unsafe {
-        raopcl.connect(true)?;
-
         let latency = raopcl.latency();
 
         info!("connected to {} on port {}, player latency is {} ms", args.arg_server_ip, args.flag_p, TS2MS(latency, raopcl.sample_rate()));
