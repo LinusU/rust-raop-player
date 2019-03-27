@@ -153,9 +153,9 @@ pub struct RaopClient {
     et: Option<String>,
 
     // Mutable properties
-    rtp_time: Arc<Mutex<Option<UdpSocket>>>,
-    rtp_ctrl: Arc<Mutex<Option<UdpSocket>>>,
-    rtp_audio: Arc<Mutex<Option<UdpSocket>>>,
+    rtp_time: Arc<Mutex<UdpSocket>>,
+    rtp_ctrl: Arc<Mutex<UdpSocket>>,
+    rtp_audio: Arc<Mutex<UdpSocket>>,
 
     sane: Arc<Mutex<raopcl_s__bindgen_ty_1>>,
     retransmit: Arc<Mutex<u32>>,
@@ -328,7 +328,7 @@ impl RaopClient {
         // AppleTV expects now the timing port ot be opened BEFORE the setup message
         let rtp_time = UdpSocket::bind((local_addr, 0))?;
         let local_time_port = rtp_time.local_addr()?.port();
-        let rtp_time_mutex = Arc::new(Mutex::new(Some(rtp_time)));
+        let rtp_time_mutex = Arc::new(Mutex::new(rtp_time));
 
         let time_running_mutex = Arc::new(AtomicBool::new(true));
         let time_thread_mutex = {
@@ -369,8 +369,8 @@ impl RaopClient {
         rtp_audio.connect((remote_addr, remote_audio_port))?;
         rtp_ctrl.connect((remote_addr, remote_ctrl_port))?;
 
-        let rtp_ctrl_mutex = Arc::new(Mutex::new(Some(rtp_ctrl)));
-        let rtp_audio_mutex = Arc::new(Mutex::new(Some(rtp_audio)));
+        let rtp_ctrl_mutex = Arc::new(Mutex::new(rtp_ctrl));
+        let rtp_audio_mutex = Arc::new(Mutex::new(rtp_audio));
 
         let status = Status {
             state: raop_states_s_RAOP_DOWN,
@@ -522,8 +522,7 @@ impl RaopClient {
 
                 if first_pkt {
                     trace!("[accept_frames] - aquiring ctrl socket");
-                    let socket_lock = self.rtp_ctrl.lock().unwrap();
-                    let socket = socket_lock.as_ref().unwrap();
+                    let socket = self.rtp_ctrl.lock().unwrap();
                     trace!("[accept_frames] - got ctrl socket");
                     trace!("[accept_frames] - aquiring latency_frames");
                     let latency_frames = self.latency_frames.lock().unwrap();
@@ -547,8 +546,7 @@ impl RaopClient {
 
                 if first_pkt {
                     trace!("[accept_frames] - aquiring ctrl socket");
-                    let socket_lock = self.rtp_ctrl.lock().unwrap();
-                    let socket = socket_lock.as_ref().unwrap();
+                    let socket = self.rtp_ctrl.lock().unwrap();
                     trace!("[accept_frames] - got ctrl socket");
                     trace!("[accept_frames] - aquiring latency_frames");
                     let latency_frames = self.latency_frames.lock().unwrap();
@@ -647,8 +645,7 @@ impl RaopClient {
             status.state = raop_states_s_RAOP_STREAMING;
 
             trace!("[send_chunk] - aquiring ctrl socket");
-            let socket_lock = self.rtp_ctrl.lock().unwrap();
-            let socket = socket_lock.as_ref().unwrap();
+            let socket = self.rtp_ctrl.lock().unwrap();
             trace!("[send_chunk] - got ctrl socket");
             trace!("[send_chunk] - aquiring latency_frames");
             let latency_frames = self.latency_frames.lock().unwrap();
@@ -762,23 +759,6 @@ impl RaopClient {
         return self._set_volume();
     }
 
-    fn _disconnect(&self, force: bool) -> Result<(), Box<std::error::Error>> {
-        let mut status = self.status.lock().unwrap();
-
-        if force == false && status.state == raop_states_s_RAOP_DOWN { return Ok(()); }
-
-        status.state = raop_states_s_RAOP_DOWN;
-
-        self._terminate_rtp()?;
-
-        let mut rtsp_client = self.rtsp_client.lock().unwrap();
-        let success1 = rtsp_client.flush(status.seq_number + 1, status.head_ts + 1);
-
-        success1?;
-
-        Ok(())
-    }
-
     fn _send_audio(&self, status: &mut Status, packet: *mut rtp_audio_pkt_t, size: usize) -> Result<bool, Box<std::error::Error>> {
         /*
         Do not send if audio port closed or we are not yet in streaming state. We
@@ -799,7 +779,7 @@ impl RaopClient {
         FIXME: This is no longer implemented :(
         */
         let socket = self.rtp_audio.lock().unwrap();
-        let n = socket.as_ref().unwrap().send(unsafe { any_as_u8_slice_len(&*packet, size) }).unwrap();
+        let n = socket.send(unsafe { any_as_u8_slice_len(&*packet, size) }).unwrap();
         drop(socket);
 
         let mut ret = true;
@@ -818,20 +798,6 @@ impl RaopClient {
 
         Ok(ret)
     }
-
-    fn _terminate_rtp(&self) -> Result<(), Box<std::error::Error>> {
-        self.ctrl_running.store(false, Ordering::Relaxed);
-        self.ctrl_thread.lock().unwrap().take().map(|ctrl_thread| ctrl_thread.join());
-
-        self.time_running.store(false, Ordering::Relaxed);
-        self.time_thread.lock().unwrap().take().map(|time_thread| time_thread.join());
-
-        self.rtp_ctrl.lock().unwrap().take();
-        self.rtp_time.lock().unwrap().take();
-        self.rtp_audio.lock().unwrap().take();
-
-        Ok(())
-    }
 }
 
 impl Drop for Status {
@@ -844,7 +810,17 @@ impl Drop for Status {
 
 impl Drop for RaopClient {
     fn drop(&mut self) {
-        self._disconnect(false).unwrap();
+        let mut status = self.status.lock().unwrap();
+        status.state = raop_states_s_RAOP_DOWN;
+
+        self.ctrl_running.store(false, Ordering::Relaxed);
+        self.ctrl_thread.lock().unwrap().take().map(|ctrl_thread| ctrl_thread.join());
+
+        self.time_running.store(false, Ordering::Relaxed);
+        self.time_thread.lock().unwrap().take().map(|time_thread| time_thread.join());
+
+        let mut rtsp_client = self.rtsp_client.lock().unwrap();
+        rtsp_client.flush(status.seq_number + 1, status.head_ts + 1).unwrap();
     }
 }
 
@@ -909,13 +885,12 @@ impl rtp_time_pkt_t {
     }
 }
 
-fn _rtp_timing_thread(running: Arc<AtomicBool>, socket: Arc<Mutex<Option<UdpSocket>>>) {
+fn _rtp_timing_thread(running: Arc<AtomicBool>, socket_mutex: Arc<Mutex<UdpSocket>>) {
     // FIXME: this should come from the UdpSocket
     let mut connected = false;
 
     while running.load(Ordering::Relaxed) {
-        let socket_lock = socket.lock().unwrap();
-        let socket = socket_lock.as_ref().unwrap();
+        let socket = socket_mutex.lock().unwrap();
 
         let mut req = rtp_time_pkt_t::new();
         let mut n: usize;
@@ -957,7 +932,6 @@ fn _rtp_timing_thread(running: Arc<AtomicBool>, socket: Arc<Mutex<Option<UdpSock
         }
 
         drop(socket);
-        drop(socket_lock);
 
         if n == 0 {
             error!("read, disconnected on the other end");
@@ -991,10 +965,10 @@ impl rtp_lost_pkt_t {
     }
 }
 
-fn _rtp_control_thread(running: Arc<AtomicBool>, socket_mutex: Arc<Mutex<Option<UdpSocket>>>, status_mutex: Arc<Mutex<Status>>, sane_mutex: Arc<Mutex<raopcl_s__bindgen_ty_1>>, retransmit_mutex: Arc<Mutex<u32>>, latency_frames_mutex: Arc<Mutex<u32>>, sample_rate: u32) {
+fn _rtp_control_thread(running: Arc<AtomicBool>, socket_mutex: Arc<Mutex<UdpSocket>>, status_mutex: Arc<Mutex<Status>>, sane_mutex: Arc<Mutex<raopcl_s__bindgen_ty_1>>, retransmit_mutex: Arc<Mutex<u32>>, latency_frames_mutex: Arc<Mutex<u32>>, sample_rate: u32) {
     // NOTE: socket _must_ be connected here
     {
-        (socket_mutex.lock().unwrap()).as_ref().unwrap().set_nonblocking(true).unwrap();
+        socket_mutex.lock().unwrap().set_nonblocking(true).unwrap();
     }
 
     // Reuse this memory for receiving packet
@@ -1002,8 +976,7 @@ fn _rtp_control_thread(running: Arc<AtomicBool>, socket_mutex: Arc<Mutex<Option<
 
     while running.load(Ordering::Relaxed) {
         trace!("[_rtp_control_thread] - aquiring ctrl socket");
-        let socket_lock = socket_mutex.lock().unwrap();
-        let socket = socket_lock.as_ref().unwrap();
+        let socket = socket_mutex.lock().unwrap();
         trace!("[_rtp_control_thread] - got ctrl socket");
 
         let n = match socket.recv(unsafe { any_as_u8_mut_slice(&mut lost) }) {
@@ -1081,7 +1054,6 @@ fn _rtp_control_thread(running: Arc<AtomicBool>, socket_mutex: Arc<Mutex<Option<
         }
 
         drop(socket);
-        drop(socket_lock);
         trace!("[_rtp_control_thread] - dropping socket");
 
         thread::sleep(std::time::Duration::from_secs(1));
