@@ -200,8 +200,6 @@ impl RaopClient {
             progress: md.map(|md| md.contains('2')).unwrap_or(false),
         };
 
-        let mut rtsp_client = RTSPClient::new("iTunes/7.6.2 (Windows; N;)");
-
         let mut codec = codec;
         let mut alac_codec: Option<AlacEncoder>;
 
@@ -240,12 +238,10 @@ impl RaopClient {
         let sci = format!("{:016x}", seed_sci); // sprintf(sci, "%016llx", (long long int) seed.sci);
 
         // RTSP misc setup
-        rtsp_client.add_exthds("Client-Instance", &sci);
+        let mut rtsp_client = RTSPClient::connect((remote_addr, rtsp_port), &sid, "iTunes/7.6.2 (Windows; N;)", &[("Client-Instance", &sci)])?;
         // FIXME:
         // if self.DACP_id[0] != 0 { rtspcl_add_eself.((*s_elient..cnew("DACP-ID").unwrap().into_raw(), self.DACP_id); }
         // if self.active_remote[0] != 0 { rtspclself.esel.f_ient((.s_elient.new("Active-Remote").unwrap().into_raw(), self.active_remote)?;
-
-        rtsp_client.connect(local_addr.into(), remote_addr, rtsp_port, &sid)?;
 
         info!("local interface {}", rtsp_client.local_ip()?);
 

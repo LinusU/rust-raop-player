@@ -1,13 +1,12 @@
-use crate::bindings::{open_tcp_socket, get_tcp_connect_by_host, getsockname, in_addr, sockaddr, sockaddr_in, send, recv, close, read_line, malloc, memcpy, free};
+use crate::bindings::memcpy;
 use crate::bindings::{ed25519_public_key_size, ed25519_secret_key_size, ed25519_private_key_size, ed25519_signature_size, ed25519_CreateKeyPair, curve25519_dh_CalculatePublicKey, curve25519_dh_CreateSharedKey, ed25519_SignMessage};
 use crate::bindings::{CTR_BIG_ENDIAN, aes_ctr_context, aes_ctr_init, aes_ctr_encrypt};
 
 use openssl_sys::{SHA512_CTX, SHA512_Init, SHA512_Update, SHA512_Final};
 
-use std::ffi::{CStr, CString, c_void};
-use std::io::Write;
-use std::mem::size_of;
-use std::net::Ipv4Addr;
+use std::ffi::c_void;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::ptr;
 use std::str::from_utf8;
 
@@ -22,65 +21,30 @@ enum Body<'a> {
 }
 
 pub struct RTSPClient {
-    fd: ::std::os::raw::c_int,
-    url: Option<String>,
+    socket: BufReader<TcpStream>,
+    url: String,
     cseq: u64,
     headers: Vec<(String, String)>,
     session: Option<String>,
     user_agent: String,
-    local_addr: Option<Ipv4Addr>,
 }
 
 impl RTSPClient {
-    pub fn new(user_agent: &str) -> RTSPClient {
-        RTSPClient {
-            fd: -1,
-            url: None,
+    pub fn connect<A: ToSocketAddrs>(addr: A, sid: &str, user_agent: &str, headers: &[(&str, &str)]) -> Result<RTSPClient, Box<std::error::Error>> {
+        let socket = TcpStream::connect(addr)?;
+        let peer_addr = socket.peer_addr()?;
+
+        Ok(RTSPClient {
+            socket: BufReader::new(socket),
+            url: format!("rtsp://{}/{}", peer_addr.ip(), sid),
             cseq: 0,
-            headers: vec!(),
+            headers: headers.iter().map(|header| (header.0.to_owned(), header.1.to_owned())).collect(),
             session: None,
             user_agent: user_agent.to_owned(),
-            local_addr: None,
-        }
+        })
     }
 
     // bool rtspcl_set_useragent(struct rtspcl_s *p, const char *name);
-
-    pub fn connect(&mut self, local: Ipv4Addr, host: Ipv4Addr, destport: u16, sid: &str) -> Result<(), Box<std::error::Error>> {
-        let mut name: sockaddr_in = sockaddr_in {
-            sin_len: 0,
-            sin_family: 0,
-            sin_port: 0,
-            sin_addr: in_addr { s_addr: 0 },
-            sin_zero: [0; 8usize],
-        };
-
-        let mut myport: u16 = 0;
-        let mut namelen: u32 = size_of::<sockaddr_in>() as u32;
-
-        self.session = None;
-        unsafe {
-            self.fd = open_tcp_socket(local.into(), &mut myport);
-            if self.fd == -1 { panic!("open_tcp_socket failed"); }
-            if !get_tcp_connect_by_host(self.fd, host.into(), destport) { panic!("get_tcp_connect_by_host failed"); }
-
-            getsockname(self.fd, ((&mut name) as *mut sockaddr_in) as *mut sockaddr, &mut namelen);
-        }
-
-        self.local_addr = Some(name.sin_addr.into());
-        self.url = Some(format!("rtsp://{}/{}", host, sid));
-
-        Ok(())
-    }
-
-    fn _disconnect(&mut self) -> Result<(), Box<std::error::Error>> {
-        let result = self.exec_request("TEARDOWN", Body::None, vec!(), None);
-
-        unsafe { close(self.fd); }
-        self.fd = -1;
-
-        result.map(|_| ())
-    }
 
     // bool rtspcl_is_connected(struct rtspcl_s *p);
     // bool rtspcl_is_sane(struct rtspcl_s *p);
@@ -239,7 +203,7 @@ impl RTSPClient {
     }
 
     pub fn local_ip(&self) -> Result<String, Box<std::error::Error>> {
-        Ok(self.local_addr.unwrap().to_string())
+        Ok(self.socket.get_ref().local_addr()?.ip().to_string())
     }
 
     // static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type,
@@ -256,10 +220,6 @@ impl RTSPClient {
         // struct pollfd pfds;
         // key_data_t lkd[MAX_KD], *pkd;
 
-        if self.fd == -1 {
-            panic!("exec_request called without file descriptor");
-        }
-
         // FIXME: Wait for "Normal data may be written without blocking."
         // pfds.fd = rtspcld->fd;
         // pfds.events = POLLOUT;
@@ -268,8 +228,7 @@ impl RTSPClient {
 
         let mut req = Vec::new();
 
-        // let url = url.unwrap_or_else(|| self.url.unwrap().as_str());
-        let url = if let Some(url) = url { url } else if let Some(ref url) = self.url { url.as_str() } else { panic!("") };
+        let url = url.unwrap_or_else(|| self.url.as_str());
 
         write!(&mut req, "{} {} RTSP/1.0\r\n", cmd, url)?;
 
@@ -309,8 +268,7 @@ impl RTSPClient {
             req.extend_from_slice(content);
         }
 
-        let len = req.len();
-        let rval = unsafe { send(self.fd, CString::new(req.clone()).unwrap().into_raw() as *const c_void, len, 0) };
+        self.socket.get_ref().write_all(&req)?;
 
         match body {
             Body::Text { content_type: _, content: _ } => debug!("----> : write {}", from_utf8(&req).unwrap()),
@@ -318,17 +276,9 @@ impl RTSPClient {
             Body::None => debug!("----> : write {}", from_utf8(&req).unwrap()),
         }
 
-        if rval != len as isize {
-            error!("couldn't write request ({}!={})", rval, len);
-        }
-
-        let mut timeout = 10000;
-        let mut line_buffer = [0i8; 2048];
-
         {
-            let n = unsafe { read_line(self.fd, (&mut line_buffer[0]) as *mut i8, line_buffer.len() as i32, timeout, 0) };
-            if n <= 0 { panic!("request failed"); }
-            let line = unsafe { CStr::from_ptr(&line_buffer[0]).to_str().unwrap() };
+            let mut line = String::new();
+            self.socket.read_line(&mut line)?;
 
             let status = line.splitn(3, ' ').skip(1).next().unwrap();
 
@@ -344,13 +294,12 @@ impl RTSPClient {
         let mut response_content_length: usize = 0;
 
         loop {
-            let n = unsafe { read_line(self.fd, (&mut line_buffer[0]) as *mut i8, line_buffer.len() as i32, timeout, 0) };
-            if n < 0 { panic!("request failed"); }
-            if n == 0 { break; }
-            let line = unsafe { CStr::from_ptr(&line_buffer[0]).to_str().unwrap() };
+            let mut line = String::new();
+            self.socket.read_line(&mut line)?;
+
+            if line.trim() == "" { break; }
 
             debug!("<------ : {}", line);
-            timeout = 1000; // once it started, it shouldn't take a long time
 
             let mut parts = line.splitn(2, ':').map(|part| part.trim());
             let key = parts.next().unwrap().to_owned();
@@ -367,22 +316,10 @@ impl RTSPClient {
             return Ok((response_headers, String::new()));
         }
 
-        let data = unsafe { malloc(response_content_length) as *mut u8 };
-        let mut size: usize = 0;
+        let mut data = vec![0u8; response_content_length];
+        self.socket.read_exact(&mut data)?;
 
-        while size < response_content_length {
-            let bytes = unsafe { recv(self.fd, data.offset(size as isize) as *mut c_void, response_content_length - size, 0) };
-            if bytes <= 0 { break; }
-            size += bytes as usize;
-        }
-
-        if size != response_content_length {
-            error!("content length receive error {}!={}", size, response_content_length);
-            panic!("content length receive error");
-        }
-
-        let response_content = unsafe { CStr::from_ptr(data as *const i8).to_str()?.to_owned() };
-        unsafe { free(data as *mut c_void); }
+        let response_content = String::from_utf8(data)?;
 
         info!("Body data {}, {}", response_content_length, response_content);
 
@@ -392,6 +329,6 @@ impl RTSPClient {
 
 impl Drop for RTSPClient {
     fn drop(&mut self) {
-        self._disconnect().unwrap();
+        self.exec_request("TEARDOWN", Body::None, vec!(), None).unwrap();
     }
 }
