@@ -1,5 +1,4 @@
 use crate::alac_encoder::AlacEncoder;
-use crate::bindings::{raop_state_t, raop_states_s_RAOP_DOWN, raop_states_s_RAOP_FLUSHED, raop_states_s_RAOP_STREAMING};
 use crate::bindings::{get_ntp, rtp_header_t, rtp_audio_pkt_t, free, pcm_to_alac_raw, malloc, rtp_sync_pkt_t, ntp_t, usleep, MAX_SAMPLES_PER_CHUNK, RAOP_LATENCY_MIN, aes_context, aes_set_key, raopcl_s__bindgen_ty_1, raopcl_s__bindgen_ty_2, raopcl_s__bindgen_ty_1__bindgen_ty_1};
 use crate::rtsp_client::RTSPClient;
 
@@ -86,6 +85,14 @@ pub fn analyse_setup(setup_headers: Vec<(String, String)>) -> Result<(u16, u16, 
     Ok((audio_port, ctrl_port, time_port))
 }
 
+#[derive(PartialEq, PartialOrd)]
+enum RaopState {
+    Down,
+    Flushing,
+    Flushed,
+    Streaming,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum Codec {
     PCM = 0,
@@ -119,7 +126,7 @@ struct AesContext {
 }
 
 struct Status {
-    state: raop_state_t,
+    state: RaopState,
     seq_number: u16,
     head_ts: u64,
     pause_ts: u64,
@@ -369,7 +376,7 @@ impl RaopClient {
         let rtp_audio_mutex = Arc::new(Mutex::new(rtp_audio));
 
         let status = Status {
-            state: raop_states_s_RAOP_DOWN,
+            state: RaopState::Down,
             seq_number: random(),
             head_ts: 0,
             pause_ts: 0,
@@ -406,7 +413,7 @@ impl RaopClient {
         {
             // as connect might take time, state might already have been set
             let mut status = status_mutex.lock().unwrap();
-            if status.state == raop_states_s_RAOP_DOWN { status.state = raop_states_s_RAOP_FLUSHED; }
+            if status.state == RaopState::Down { status.state = RaopState::Flushed; }
         }
 
         let client = RaopClient {
@@ -499,16 +506,16 @@ impl RaopClient {
             now_ts = NTP2TS(now, self.sample_rate);
 
             // Not flushed yet, but we have time to wait, so pretend we are full
-            if status.state != raop_states_s_RAOP_FLUSHED && (!status.start_ts > 0 || status.start_ts > now_ts + self.latency() as u64) {
+            if status.state != RaopState::Flushed && (!status.start_ts > 0 || status.start_ts > now_ts + self.latency() as u64) {
                 return Ok(false);
             }
 
             // move to streaming only when really flushed - not when timedout
-            if status.state == raop_states_s_RAOP_FLUSHED {
+            if status.state == RaopState::Flushed {
                 status.first_pkt = true;
                 first_pkt = true;
                 info!("begining to stream hts:{} n:{}.{}", status.head_ts, SEC(now), FRAC(now));
-                status.state = raop_states_s_RAOP_STREAMING;
+                status.state = RaopState::Streaming;
             }
 
             // unpausing ...
@@ -635,10 +642,10 @@ impl RaopClient {
         done by the raopcl_accept_frames function, except when a player takes too
         long to flush (JBL OnBeat) and we have to "fake" accepting frames
         */
-        if status.state == raop_states_s_RAOP_FLUSHED {
+        if status.state == RaopState::Flushed {
             status.first_pkt = true;
             info!("begining to stream (LATE) hts:{} n:{}.{}", status.head_ts, SEC(now), FRAC(now));
-            status.state = raop_states_s_RAOP_STREAMING;
+            status.state = RaopState::Streaming;
 
             trace!("[send_chunk] - aquiring ctrl socket");
             let socket = self.rtp_ctrl.lock().unwrap();
@@ -741,7 +748,7 @@ impl RaopClient {
     }
 
     fn _set_volume(&self) -> Result<(), Box<std::error::Error>> {
-        if (*self.status.lock().unwrap()).state < raop_states_s_RAOP_FLUSHED { return Ok(()); }
+        if (*self.status.lock().unwrap()).state < RaopState::Flushed { return Ok(()); }
 
         let parameter = format!("volume: {}\r\n", *self.volume.lock().unwrap());
         (*self.rtsp_client.lock().unwrap()).set_parameter(&parameter)?;
@@ -765,7 +772,7 @@ impl RaopClient {
         connect has returned in case of multi-threaded application
         */
         // FIXME: if self.rtp_ports.audio.fd == -1  { return Ok(false); }
-        if status.state != raop_states_s_RAOP_STREAMING { return Ok(false); }
+        if status.state != RaopState::Streaming { return Ok(false); }
 
         /*
         The audio socket is non blocking, so we can can wait socket availability
@@ -807,7 +814,7 @@ impl Drop for Status {
 impl Drop for RaopClient {
     fn drop(&mut self) {
         let mut status = self.status.lock().unwrap();
-        status.state = raop_states_s_RAOP_DOWN;
+        status.state = RaopState::Down;
 
         self.ctrl_running.store(false, Ordering::Relaxed);
         self.ctrl_thread.lock().unwrap().take().map(|ctrl_thread| ctrl_thread.join());
@@ -822,7 +829,7 @@ impl Drop for RaopClient {
 
 fn _send_sync(socket: &UdpSocket, status: &mut Status, sample_rate: u32, latency_frames: u32, first: bool) -> Result<(), Box<std::error::Error>> {
     // do not send timesync on FLUSHED
-    if status.state != raop_states_s_RAOP_STREAMING { return Ok(()); }
+    if status.state != RaopState::Streaming { return Ok(()); }
 
     let timestamp = status.head_ts;
     let now = TS2NTP(timestamp, sample_rate);
