@@ -144,8 +144,6 @@ struct Status {
     backlog: [Option<BacklogEntry>; 512usize],
 }
 
-unsafe impl Send for Status {}
-
 struct SaneAudio {
     avail: u64,
     select: u64,
@@ -204,8 +202,6 @@ pub struct RaopClient {
     alac_codec: Arc<Mutex<Option<AlacEncoder>>>,
     rtsp_client: Arc<Mutex<RTSPClient>>,
 }
-
-unsafe impl Send for RaopClient {}
 
 impl RaopClient {
     pub fn connect(local_addr: Ipv4Addr, codec: Codec, chunk_length: u32, latency_frames: u32, crypto: Crypto, auth: bool, secret: Option<&str>, et: Option<&str>, md: Option<&str>, sample_rate: u32, sample_size: u32, channels: u8, volume: f32, remote_addr: Ipv4Addr, rtsp_port: u16, set_volume: bool) -> Result<RaopClient, Box<std::error::Error>> {
