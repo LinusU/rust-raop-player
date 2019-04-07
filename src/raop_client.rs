@@ -1,6 +1,7 @@
 use crate::alac_encoder::AlacEncoder;
-use crate::bindings::{get_ntp, rtp_header_t, rtp_audio_pkt_t, free, pcm_to_alac_raw, malloc, rtp_sync_pkt_t, ntp_t, usleep, MAX_SAMPLES_PER_CHUNK, RAOP_LATENCY_MIN, aes_context, aes_set_key, raopcl_s__bindgen_ty_1, raopcl_s__bindgen_ty_2, raopcl_s__bindgen_ty_1__bindgen_ty_1};
+use crate::bindings::{get_ntp, rtp_header_t, free, pcm_to_alac_raw, malloc, rtp_sync_pkt_t, ntp_t, usleep, MAX_SAMPLES_PER_CHUNK, RAOP_LATENCY_MIN, aes_context, aes_set_key, raopcl_s__bindgen_ty_1, raopcl_s__bindgen_ty_1__bindgen_ty_1};
 use crate::rtsp_client::RTSPClient;
+use crate::rtp::{RtpHeader, RtpAudioPacket};
 
 use std::mem::size_of;
 use std::net::{UdpSocket};
@@ -125,6 +126,12 @@ struct AesContext {
     key: [u8; 16usize],
 }
 
+struct BacklogEntry {
+    seq_number: u16,
+    timestamp: u64,
+    packet: RtpAudioPacket,
+}
+
 struct Status {
     state: RaopState,
     seq_number: u16,
@@ -134,7 +141,7 @@ struct Status {
     first_ts: u64,
     first_pkt: bool,
     flushing: bool,
-    backlog: [raopcl_s__bindgen_ty_2; 512usize],
+    backlog: [Option<BacklogEntry>; 512usize],
 }
 
 unsafe impl Send for Status {}
@@ -384,7 +391,25 @@ impl RaopClient {
             first_ts: 0,
             first_pkt: false,
             flushing: true,
-            backlog: [raopcl_s__bindgen_ty_2 { seq_number: 0, timestamp: 0, size: 0, buffer: ptr::null_mut() }; 512usize],
+            // FIXME: https://github.com/rust-lang/rust/issues/49147
+            backlog: [
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+            ],
         };
 
         let record_headers = rtsp_client.record(status.seq_number + 1, NTP2TS(safe_get_ntp(), sample_rate))?;
@@ -564,7 +589,7 @@ impl RaopClient {
                 // search pause_ts in backlog, it should be backward, not too far
                 n = status.seq_number;
                 i = 0;
-                while i < MAX_BACKLOG && status.backlog[(n % MAX_BACKLOG) as usize].timestamp > status.pause_ts {
+                while i < MAX_BACKLOG && status.backlog[(n % MAX_BACKLOG) as usize].as_ref().map(|e| e.timestamp).unwrap_or(0) > status.pause_ts {
                     i += 1;
                     n -= 1;
                 }
@@ -577,36 +602,29 @@ impl RaopClient {
                 while i < chunks {
                     let index = ((n + i) % MAX_BACKLOG) as usize;
 
-                    if status.backlog[index].buffer.is_null() { continue; }
+                    if let Some(mut entry) = status.backlog[index].take() {
+                        status.seq_number += 1;
 
-                    status.seq_number += 1;
-
-                    let mut packet: *mut rtp_audio_pkt_t;
-                    unsafe {
-                        packet = status.backlog[index].buffer.offset(size_of::<rtp_header_t>() as isize) as *mut rtp_audio_pkt_t;
-                        (*packet).hdr.seq[0] = ((status.seq_number >> 8) & 0xff) as u8;
-                        (*packet).hdr.seq[1] = (status.seq_number & 0xff) as u8;
-                        (*packet).timestamp = (status.head_ts as u32).to_be();
-                        (*packet).hdr.type_ = 0x60 | (if status.first_pkt { 0x80 } else { 0 });
+                        entry.packet.header.type_ = if status.first_pkt { 0xE0 } else { 0x60 };
+                        entry.packet.header.seq = status.seq_number;
+                        entry.packet.timestamp = status.head_ts as u32;
                         status.first_pkt = false;
+
+                        self._send_audio(&mut status, &entry.packet)?;
+
+                        // then replace packets in backlog in case
+                        let reindex = (status.seq_number % MAX_BACKLOG) as usize;
+
+                        status.backlog[reindex] = Some(BacklogEntry {
+                            seq_number: status.seq_number,
+                            timestamp: status.head_ts,
+                            packet: entry.packet,
+                        });
+
+                        status.head_ts += self.chunk_length as u64;
+
+                        i += 1;
                     }
-
-                    // then replace packets in backlog in case
-                    let reindex = (status.seq_number % MAX_BACKLOG) as usize;
-
-                    status.backlog[reindex].seq_number = status.seq_number;
-                    status.backlog[reindex].timestamp = status.head_ts;
-                    if !status.backlog[reindex].buffer.is_null() { unsafe { free(status.backlog[reindex].buffer as *mut std::ffi::c_void); } }
-                    status.backlog[reindex].buffer = status.backlog[index].buffer;
-                    status.backlog[reindex].size = status.backlog[index].size;
-                    status.backlog[index].buffer = ptr::null_mut();
-
-                    status.head_ts += self.chunk_length as u64;
-
-                    let size = status.backlog[reindex].size as usize;
-                    self._send_audio(&mut status, packet, size)?;
-
-                    i += 1;
                 }
 
                 debug!("finished resend {}", i);
@@ -686,34 +704,23 @@ impl RaopClient {
             }
         }
 
-        let buffer = unsafe { malloc(size_of::<rtp_header_t>() + size_of::<rtp_audio_pkt_t>() + size as usize) as *mut u8 };
-
-        if buffer.is_null() {
-            unsafe { free(encoded as *mut std::ffi::c_void); }
-            error!("cannot allocate buffer");
-            panic!("Cannot allocate buffer");
-        }
-
         *playtime = TS2NTP(status.head_ts + self.latency() as u64, self.sample_rate);
 
         trace!("sending audio ts:{} (pt:{}.{} now:{}) ", status.head_ts, SEC(*playtime), FRAC(*playtime), safe_get_ntp());
 
         status.seq_number = status.seq_number.wrapping_add(1);
 
-        // packet is after re-transmit header
-        let packet: *mut rtp_audio_pkt_t;
-        unsafe {
-            packet = buffer.offset(size_of::<rtp_header_t>() as isize) as *mut rtp_audio_pkt_t;
-            (*packet).hdr.proto = 0x80;
-            (*packet).hdr.type_ = 0x60 | (if status.first_pkt { 0x80 } else { 0 });
-            status.first_pkt = false;
-            (*packet).hdr.seq[0] = ((status.seq_number >> 8) & 0xff) as u8;
-            (*packet).hdr.seq[1] = (status.seq_number & 0xff) as u8;
-            (*packet).timestamp = (status.head_ts as u32).to_be();
-            (*packet).ssrc = (*self.ssrc.lock().unwrap() as u32).to_be();
-
-            buffer.offset((size_of::<rtp_header_t>() + size_of::<rtp_audio_pkt_t>()) as isize).copy_from(encoded, size as usize);
-        }
+        let packet = RtpAudioPacket {
+            header: RtpHeader {
+                proto: 0x80,
+                type_: (if status.first_pkt { 0xE0 } else { 0x60 }),
+                seq: status.seq_number,
+            },
+            timestamp: status.head_ts as u32,
+            ssrc: (*self.ssrc.lock().unwrap() as u32),
+            data: unsafe { std::slice::from_raw_parts(encoded, size as usize).to_vec() },
+        };
+        status.first_pkt = false;
 
         // with newer airport express, don't use encryption (??)
         if self.crypto != Crypto::Clear {
@@ -721,16 +728,17 @@ impl RaopClient {
             // raopcl_encrypt(p, (u8_t*) packet + sizeof(rtp_audio_pkt_t), size);
         }
 
+        self._send_audio(&mut status, &packet)?;
+
         let n = (status.seq_number % MAX_BACKLOG) as usize;
-        status.backlog[n].seq_number = status.seq_number;
-        status.backlog[n].timestamp = status.head_ts;
-        if !status.backlog[n].buffer.is_null() { unsafe { free(status.backlog[n].buffer as *mut std::ffi::c_void); } }
-        status.backlog[n].buffer = buffer;
-        status.backlog[n].size = (size_of::<rtp_audio_pkt_t>() as i32) + size;
+
+        status.backlog[n] = Some(BacklogEntry {
+            seq_number: status.seq_number,
+            timestamp: status.head_ts,
+            packet: packet,
+        });
 
         status.head_ts += self.chunk_length as u64;
-
-        self._send_audio(&mut status, packet, size_of::<rtp_audio_pkt_t>() + (size as usize))?;
 
         if NTP2MS(*playtime) % 10000 < 8 {
             let sane = *self.sane.lock().unwrap();
@@ -762,7 +770,7 @@ impl RaopClient {
         return self._set_volume();
     }
 
-    fn _send_audio(&self, status: &mut Status, packet: *mut rtp_audio_pkt_t, size: usize) -> Result<bool, Box<std::error::Error>> {
+    fn _send_audio(&self, status: &mut Status, packet: &RtpAudioPacket) -> Result<bool, Box<std::error::Error>> {
         /*
         Do not send if audio port closed or we are not yet in streaming state. We
         might be just waiting for flush to happen in the case of a device taking a
@@ -782,7 +790,7 @@ impl RaopClient {
         FIXME: This is no longer implemented :(
         */
         let socket = self.rtp_audio.lock().unwrap();
-        let n = socket.send(unsafe { any_as_u8_slice_len(&*packet, size) }).unwrap();
+        let n = socket.send(&packet.as_bytes()).unwrap();
         drop(socket);
 
         let mut ret = true;
@@ -790,7 +798,7 @@ impl RaopClient {
         {
             let mut sane = self.sane.lock().unwrap();
 
-            if n != size {
+            if n != packet.size() {
                 debug!("error sending audio packet");
                 ret = false;
                 sane.audio.send += 1;
@@ -800,14 +808,6 @@ impl RaopClient {
         }
 
         Ok(ret)
-    }
-}
-
-impl Drop for Status {
-    fn drop(&mut self) {
-        for item in self.backlog.iter() {
-            unsafe { free(item.buffer as *mut std::ffi::c_void); }
-        }
     }
 }
 
@@ -1014,25 +1014,14 @@ fn _rtp_control_thread(running: Arc<AtomicBool>, socket_mutex: Arc<Mutex<UdpSock
                 for i in 0..lost.n {
                     let index = ((lost.seq_number + i) % MAX_BACKLOG) as usize;
 
-                    if status.backlog[index].seq_number == lost.seq_number + i {
-                        let hdr = (status.backlog[index].buffer) as *mut rtp_header_t;
-
-                        // packet have been released meanwhile, be extra cautious
-                        if hdr.is_null() {
+                    if status.backlog[index].as_ref().map(|e| e.seq_number).unwrap_or(0) == lost.seq_number + i {
+                        if let Some(ref entry) = status.backlog[index] {
+                            *retransmit_mutex.lock().unwrap() += 1;
+                            socket.send(&entry.packet.as_retransmission_packet_bytes()).unwrap();
+                        } else {
+                            // packet have been released meanwhile, be extra cautious
                             missed += 1;
-                            continue;
                         }
-
-                        unsafe {
-                            (*hdr).proto = 0x80;
-                            (*hdr).type_ = 0x56 | 0x80;
-                            (*hdr).seq[0] = 0;
-                            (*hdr).seq[1] = 1;
-                        }
-
-                        *retransmit_mutex.lock().unwrap() += 1;
-
-                        socket.send(unsafe { any_as_u8_slice_len(&*hdr, size_of::<rtp_header_t>() + status.backlog[index].size as usize) }).unwrap();
                     } else {
                         warn!("lost packet out of backlog {}", lost.seq_number + i);
                     }

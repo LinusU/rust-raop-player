@@ -25,6 +25,7 @@ use std::fs::File;
 // Local dependencies
 mod alac_encoder;
 mod raop_client;
+mod rtp;
 mod rtsp_client;
 use crate::raop_client::{Codec, Crypto, RaopClient};
 
