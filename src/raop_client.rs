@@ -1,5 +1,5 @@
 use crate::alac_encoder::AlacEncoder;
-use crate::bindings::{get_ntp, rtp_header_t, free, pcm_to_alac_raw, malloc, rtp_sync_pkt_t, ntp_t, usleep, MAX_SAMPLES_PER_CHUNK, RAOP_LATENCY_MIN, aes_context, aes_set_key, raopcl_s__bindgen_ty_1, raopcl_s__bindgen_ty_1__bindgen_ty_1};
+use crate::bindings::{get_ntp, rtp_header_t, free, pcm_to_alac_raw, malloc, rtp_sync_pkt_t, ntp_t, usleep, MAX_SAMPLES_PER_CHUNK, RAOP_LATENCY_MIN, aes_context, aes_set_key};
 use crate::rtsp_client::RTSPClient;
 use crate::rtp::{RtpHeader, RtpAudioPacket};
 
@@ -146,6 +146,18 @@ struct Status {
 
 unsafe impl Send for Status {}
 
+struct SaneAudio {
+    avail: u64,
+    select: u64,
+    send: u64,
+}
+
+struct Sane {
+    ctrl: u64,
+    time: u64,
+    audio: SaneAudio,
+}
+
 pub struct RaopClient {
     // Immutable properties
     remote_addr: Ipv4Addr,
@@ -171,7 +183,7 @@ pub struct RaopClient {
     rtp_ctrl: Arc<Mutex<UdpSocket>>,
     rtp_audio: Arc<Mutex<UdpSocket>>,
 
-    sane: Arc<Mutex<raopcl_s__bindgen_ty_1>>,
+    sane: Arc<Mutex<Sane>>,
     retransmit: Arc<Mutex<u32>>,
 
     ssrc: Arc<Mutex<u32>>,
@@ -239,10 +251,10 @@ impl RaopClient {
 
         let retransmit_mutex = Arc::new(Mutex::new(0));
 
-        let sane_mutex = Arc::new(Mutex::new(raopcl_s__bindgen_ty_1 {
+        let sane_mutex = Arc::new(Mutex::new(Sane {
             ctrl: 0,
             time: 0,
-            audio: raopcl_s__bindgen_ty_1__bindgen_ty_1 { avail: 0, select: 0, send: 0 },
+            audio: SaneAudio { avail: 0, select: 0, send: 0 },
         }));
 
         let seed_sid: u32 = random();
@@ -741,7 +753,7 @@ impl RaopClient {
         status.head_ts += self.chunk_length as u64;
 
         if NTP2MS(*playtime) % 10000 < 8 {
-            let sane = *self.sane.lock().unwrap();
+            let sane = self.sane.lock().unwrap();
             let retransmit = *self.retransmit.lock().unwrap();
             info!("check n:{} p:{} ts:{} sn:{}\n               retr: {}, avail: {}, send: {}, select: {})",
                 MSEC(now), MSEC(*playtime), status.head_ts, status.seq_number,
@@ -968,7 +980,7 @@ impl rtp_lost_pkt_t {
     }
 }
 
-fn _rtp_control_thread(running: Arc<AtomicBool>, socket_mutex: Arc<Mutex<UdpSocket>>, status_mutex: Arc<Mutex<Status>>, sane_mutex: Arc<Mutex<raopcl_s__bindgen_ty_1>>, retransmit_mutex: Arc<Mutex<u32>>, latency_frames_mutex: Arc<Mutex<u32>>, sample_rate: u32) {
+fn _rtp_control_thread(running: Arc<AtomicBool>, socket_mutex: Arc<Mutex<UdpSocket>>, status_mutex: Arc<Mutex<Status>>, sane_mutex: Arc<Mutex<Sane>>, retransmit_mutex: Arc<Mutex<u32>>, latency_frames_mutex: Arc<Mutex<u32>>, sample_rate: u32) {
     // NOTE: socket _must_ be connected here
     {
         socket_mutex.lock().unwrap().set_nonblocking(true).unwrap();
