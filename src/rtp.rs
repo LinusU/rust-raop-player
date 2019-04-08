@@ -1,8 +1,8 @@
 use crate::ntp::NtpTime;
-use crate::serialization::Serializable;
-use std::io::{self, Write};
+use crate::serialization::{Deserializable, Serializable};
+use std::io::{self, Read, Write};
 
-use byteorder::{BE, WriteBytesExt};
+use byteorder::{BE, ReadBytesExt, WriteBytesExt};
 
 pub struct RtpHeader {
     pub proto: u8,
@@ -80,5 +80,57 @@ impl<'a> Serializable for RtpAudioRetransmissionPacket<'a> {
         writer.write_u8(0x01)?;
 
         self.packet.serialize(writer)
+    }
+}
+
+pub struct RtpTimePacket {
+    pub header: RtpHeader,
+    pub dummy: u32,
+    pub ref_time: NtpTime,
+    pub recv_time: NtpTime,
+    pub send_time: NtpTime,
+}
+
+impl Deserializable for RtpTimePacket {
+    const SIZE: usize = 4 + 4 + NtpTime::SIZE + NtpTime::SIZE + NtpTime::SIZE;
+
+    fn deserialize(reader: &mut Read) -> io::Result<RtpTimePacket> {
+        let proto = reader.read_u8()?;
+        let type_ = reader.read_u8()?;
+        let seq = reader.read_u16::<BE>()?;
+
+        let dummy = reader.read_u32::<BE>()?;
+        let ref_time = NtpTime::deserialize(reader)?;
+        let recv_time = NtpTime::deserialize(reader)?;
+        let send_time = NtpTime::deserialize(reader)?;
+
+        Ok(RtpTimePacket {
+            header: RtpHeader {
+                proto,
+                type_,
+                seq,
+            },
+            dummy,
+            ref_time,
+            recv_time,
+            send_time,
+        })
+    }
+}
+
+impl Serializable for RtpTimePacket {
+    fn size(&self) -> usize {
+        RtpTimePacket::SIZE
+    }
+
+    fn serialize(&self, writer: &mut Write) -> io::Result<()> {
+        writer.write_u8(self.header.proto)?;
+        writer.write_u8(self.header.type_)?;
+        writer.write_u16::<BE>(self.header.seq)?;
+
+        writer.write_u32::<BE>(self.dummy)?;
+        self.ref_time.serialize(writer)?;
+        self.recv_time.serialize(writer)?;
+        self.send_time.serialize(writer)
     }
 }

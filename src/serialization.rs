@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 
 pub trait Serializable {
     fn size(&self) -> usize;
@@ -9,4 +9,9 @@ pub trait Serializable {
         self.serialize(&mut bytes).unwrap();
         bytes
     }
+}
+
+pub trait Deserializable: Sized {
+    const SIZE: usize;
+    fn deserialize(reader: &mut Read) -> io::Result<Self>;
 }

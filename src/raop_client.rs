@@ -1,9 +1,9 @@
 use crate::alac_encoder::AlacEncoder;
-use crate::bindings::{get_ntp, rtp_header_t, free, pcm_to_alac_raw, malloc, ntp_t, usleep, MAX_SAMPLES_PER_CHUNK, RAOP_LATENCY_MIN, aes_context, aes_set_key};
+use crate::bindings::{get_ntp, rtp_header_t, free, pcm_to_alac_raw, malloc, usleep, MAX_SAMPLES_PER_CHUNK, RAOP_LATENCY_MIN, aes_context, aes_set_key};
 use crate::ntp::NtpTime;
 use crate::rtsp_client::RTSPClient;
-use crate::rtp::{RtpHeader, RtpAudioPacket, RtpAudioRetransmissionPacket, RtpSyncPacket};
-use crate::serialization::Serializable;
+use crate::rtp::{RtpHeader, RtpAudioPacket, RtpAudioRetransmissionPacket, RtpSyncPacket, RtpTimePacket};
+use crate::serialization::{Deserializable, Serializable};
 
 use std::mem::size_of;
 use std::net::{UdpSocket};
@@ -869,32 +869,6 @@ fn _send_sync(socket: &UdpSocket, status: &mut Status, sample_rate: u32, latency
     Ok(())
 }
 
-#[repr(C, packed)]
-#[derive(Debug, Copy, Clone)]
-struct rtp_time_pkt_t {
-    hdr: rtp_header_t,
-    dummy: u32,
-    ref_time: ntp_t,
-    recv_time: ntp_t,
-    send_time: ntp_t,
-}
-
-impl rtp_time_pkt_t {
-    pub fn new() -> rtp_time_pkt_t {
-        rtp_time_pkt_t {
-            hdr: rtp_header_t {
-                proto: 0,
-                type_: 0,
-                seq: [0; 2usize],
-            },
-            dummy: 0,
-            ref_time: ntp_t { seconds: 0, fraction: 0 },
-            recv_time: ntp_t { seconds: 0, fraction: 0 },
-            send_time: ntp_t { seconds: 0, fraction: 0 },
-        }
-    }
-}
-
 fn _rtp_timing_thread(running: Arc<AtomicBool>, socket_mutex: Arc<Mutex<UdpSocket>>) {
     // FIXME: this should come from the UdpSocket
     let mut connected = false;
@@ -902,13 +876,13 @@ fn _rtp_timing_thread(running: Arc<AtomicBool>, socket_mutex: Arc<Mutex<UdpSocke
     while running.load(Ordering::Relaxed) {
         let socket = socket_mutex.lock().unwrap();
 
-        let mut req = rtp_time_pkt_t::new();
+        let mut req = [0u8; RtpTimePacket::SIZE];
         let mut n: usize;
 
         if connected {
-            n = socket.recv(unsafe { any_as_u8_mut_slice(&mut req) }).unwrap();
+            n = socket.recv(&mut req).unwrap();
         } else {
-            let (_n, client) = socket.recv_from(unsafe { any_as_u8_mut_slice(&mut req) }).unwrap();
+            let (_n, client) = socket.recv_from(&mut req).unwrap();
             n = _n;
             debug!("NTP remote port: {}", client.port());
             socket.connect(client).unwrap();
@@ -916,23 +890,22 @@ fn _rtp_timing_thread(running: Arc<AtomicBool>, socket_mutex: Arc<Mutex<UdpSocke
         }
 
         if n > 0 {
-            let mut rsp = rtp_time_pkt_t::new();
+            let req = RtpTimePacket::deserialize(&mut req.as_ref()).unwrap();
+            let rsp = RtpTimePacket {
+                header: RtpHeader {
+                    proto: req.header.proto,
+                    type_: 0x53 | 0x80,
+                    seq: req.header.seq,
+                },
+                dummy: 0,
+                recv_time: NtpTime::now(),
+                ref_time: req.send_time,
+                send_time: NtpTime::now(),
+            };
 
-            rsp.hdr = req.hdr;
-            rsp.hdr.type_ = 0x53 | 0x80;
-            // just copy the request header or set seq=7 and timestamp=0
-            rsp.ref_time = req.send_time;
+            n = socket.send(&rsp.as_bytes()).unwrap();
 
-            // transform timeval into NTP and set network order
-            unsafe { get_ntp(&mut rsp.recv_time); }
-
-            rsp.recv_time.seconds = rsp.recv_time.seconds.to_be();
-            rsp.recv_time.fraction = rsp.recv_time.fraction.to_be();
-            rsp.send_time = rsp.recv_time; // might need to add a few fraction ?
-
-            n = socket.send(unsafe { any_as_u8_slice(&rsp) }).unwrap();
-
-            if n != size_of::<rtp_time_pkt_t>() {
+            if n != rsp.size() {
                 error!("error responding to sync");
             }
 

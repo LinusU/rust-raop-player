@@ -1,10 +1,10 @@
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::time::SystemTime;
 use std::fmt::{self, Formatter, Display};
 
-use byteorder::{BE, WriteBytesExt};
+use byteorder::{BE, ReadBytesExt, WriteBytesExt};
 
-use crate::serialization::Serializable;
+use crate::serialization::{Deserializable, Serializable};
 
 #[derive(Clone, Copy)]
 pub struct NtpTime {
@@ -32,9 +32,20 @@ impl NtpTime {
     }
 }
 
+impl Deserializable for NtpTime {
+    const SIZE: usize = 8;
+
+    fn deserialize(reader: &mut Read) -> io::Result<NtpTime> {
+        let seconds = reader.read_u32::<BE>()?;
+        let fraction = reader.read_u32::<BE>()?;
+
+        Ok(NtpTime { seconds, fraction })
+    }
+}
+
 impl Serializable for NtpTime {
     fn size(&self) -> usize {
-        8
+        NtpTime::SIZE
     }
 
     fn serialize(&self, writer: &mut Write) -> io::Result<()> {
