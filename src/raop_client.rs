@@ -1,11 +1,10 @@
 use crate::alac_encoder::AlacEncoder;
-use crate::bindings::{rtp_header_t, free, pcm_to_alac_raw, malloc, usleep, MAX_SAMPLES_PER_CHUNK, RAOP_LATENCY_MIN, aes_context, aes_set_key};
+use crate::bindings::{free, pcm_to_alac_raw, malloc, usleep, MAX_SAMPLES_PER_CHUNK, RAOP_LATENCY_MIN, aes_context, aes_set_key};
 use crate::ntp::NtpTime;
 use crate::rtsp_client::RTSPClient;
-use crate::rtp::{RtpHeader, RtpAudioPacket, RtpAudioRetransmissionPacket, RtpSyncPacket, RtpTimePacket};
+use crate::rtp::{RtpHeader, RtpAudioPacket, RtpAudioRetransmissionPacket, RtpLostPacket, RtpSyncPacket, RtpTimePacket};
 use crate::serialization::{Deserializable, Serializable};
 
-use std::mem::size_of;
 use std::net::{UdpSocket};
 use std::net::Ipv4Addr;
 use std::ptr;
@@ -922,28 +921,6 @@ fn _rtp_timing_thread(running: Arc<AtomicBool>, socket_mutex: Arc<Mutex<UdpSocke
     }
 }
 
-#[repr(C, packed)]
-#[derive(Debug, Copy, Clone)]
-struct rtp_lost_pkt_t {
-    hdr: rtp_header_t,
-    seq_number: u16,
-    n: u16,
-}
-
-impl rtp_lost_pkt_t {
-    pub fn new() -> rtp_lost_pkt_t {
-        rtp_lost_pkt_t {
-            hdr: rtp_header_t {
-                proto: 0,
-                type_: 0,
-                seq: [0; 2usize],
-            },
-            seq_number: 0,
-            n: 0,
-        }
-    }
-}
-
 fn _rtp_control_thread(running: Arc<AtomicBool>, socket_mutex: Arc<Mutex<UdpSocket>>, status_mutex: Arc<Mutex<Status>>, sane_mutex: Arc<Mutex<Sane>>, retransmit_mutex: Arc<Mutex<u32>>, latency_frames_mutex: Arc<Mutex<u32>>, sample_rate: u32) {
     // NOTE: socket _must_ be connected here
     {
@@ -951,14 +928,14 @@ fn _rtp_control_thread(running: Arc<AtomicBool>, socket_mutex: Arc<Mutex<UdpSock
     }
 
     // Reuse this memory for receiving packet
-    let mut lost = rtp_lost_pkt_t::new();
+    let mut buffer = [0u8; RtpLostPacket::SIZE];
 
     while running.load(Ordering::Relaxed) {
         trace!("[_rtp_control_thread] - aquiring ctrl socket");
         let socket = socket_mutex.lock().unwrap();
         trace!("[_rtp_control_thread] - got ctrl socket");
 
-        let n = match socket.recv(unsafe { any_as_u8_mut_slice(&mut lost) }) {
+        let n = match socket.recv(&mut buffer) {
             Ok(n) => Some(n),
             Err(ref e) if e.kind() == ::std::io::ErrorKind::WouldBlock => None,
             Err(e) => panic!("encountered IO error: {}", e),
@@ -967,21 +944,21 @@ fn _rtp_control_thread(running: Arc<AtomicBool>, socket_mutex: Arc<Mutex<UdpSock
         trace!("[_rtp_control_thread] - {}", if n.is_none() { "would block" } else { "received" });
 
         if let Some(n) = n {
-            lost.seq_number = u16::from_be(lost.seq_number);
-            lost.n = u16::from_be(lost.n);
+            let lost = RtpLostPacket::deserialize(&mut buffer.as_ref());
 
             {
                 let mut sane = sane_mutex.lock().unwrap();
 
-                if n != size_of::<rtp_lost_pkt_t>() {
-                    error!("error in received request sn:{} n:{} (recv:{})", unsafe { lost.seq_number }, unsafe { lost.n }, n);
-                    lost.n = 0;
-                    lost.seq_number = 0;
+                if lost.is_err() {
+                    error!("error in received request err:{} (recv:{})", lost.unwrap_err(), n);
                     sane.ctrl += 1;
+                    continue;
                 } else {
                     sane.ctrl = 0;
                 }
             }
+
+            let lost = lost.unwrap();
 
             let mut missed: i32 = 0;
             if lost.n > 0 {
@@ -1004,7 +981,7 @@ fn _rtp_control_thread(running: Arc<AtomicBool>, socket_mutex: Arc<Mutex<UdpSock
                 }
             }
 
-            debug!("retransmit packet sn:{} nb:{} (mis:{})", unsafe { lost.seq_number }, unsafe { lost.n }, missed);
+            debug!("retransmit packet sn:{} nb:{} (mis:{})", lost.seq_number, lost.n, missed);
 
             continue;
         }

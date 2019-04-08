@@ -6,6 +6,7 @@ use byteorder::{BE, ReadBytesExt, WriteBytesExt};
 
 const RETRANSMISSION_HEADER: RtpHeader = RtpHeader { proto: 0x80, type_: 0x56 | 0x80, seq: 1 };
 
+#[derive(Debug)]
 pub struct RtpHeader {
     pub proto: u8,
     pub type_: u8,
@@ -97,6 +98,25 @@ impl<'a> Serializable for RtpAudioRetransmissionPacket<'a> {
     }
 }
 
+#[derive(Debug)]
+pub struct RtpLostPacket {
+    header: RtpHeader,
+    pub seq_number: u16,
+    pub n: u16,
+}
+
+impl Deserializable for RtpLostPacket {
+    const SIZE: usize = RtpHeader::SIZE + 2 + 2;
+
+    fn deserialize(reader: &mut Read) -> io::Result<RtpLostPacket> {
+        let header = RtpHeader::deserialize(reader)?;
+        let seq_number = reader.read_u16::<BE>()?;
+        let n = reader.read_u16::<BE>()?;
+
+        Ok(RtpLostPacket { header, seq_number, n })
+    }
+}
+
 pub struct RtpTimePacket {
     pub header: RtpHeader,
     pub dummy: u32,
@@ -106,7 +126,7 @@ pub struct RtpTimePacket {
 }
 
 impl Deserializable for RtpTimePacket {
-    const SIZE: usize = 4 + 4 + NtpTime::SIZE + NtpTime::SIZE + NtpTime::SIZE;
+    const SIZE: usize = RtpHeader::SIZE + 4 + NtpTime::SIZE + NtpTime::SIZE + NtpTime::SIZE;
 
     fn deserialize(reader: &mut Read) -> io::Result<RtpTimePacket> {
         let header = RtpHeader::deserialize(reader)?;
