@@ -904,9 +904,7 @@ fn _rtp_timing_thread(running: Arc<AtomicBool>, socket_mutex: Arc<Mutex<UdpSocke
                 error!("error responding to sync");
             }
 
-            debug!("NTP sync: {}.{} (ref {}.{})", u32::from_be(rsp.send_time.seconds), u32::from_be(rsp.send_time.fraction),
-                                                    u32::from_be(rsp.ref_time.seconds), u32::from_be(rsp.ref_time.fraction));
-
+            debug!("NTP sync: {} (ref {})", rsp.send_time, rsp.ref_time);
         }
 
         drop(socket);

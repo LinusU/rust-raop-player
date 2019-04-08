@@ -8,8 +8,8 @@ use crate::serialization::{Deserializable, Serializable};
 
 #[derive(Clone, Copy)]
 pub struct NtpTime {
-    pub seconds: u32,
-    pub fraction: u32,
+    seconds: u32,
+    fraction: u32,
 }
 
 impl NtpTime {
