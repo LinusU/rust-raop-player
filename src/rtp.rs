@@ -1,4 +1,4 @@
-use crate::bindings::{ntp_t};
+use crate::ntp::NtpTime;
 use crate::serialization::Serializable;
 use std::io::{self, Write};
 
@@ -13,8 +13,24 @@ pub struct RtpHeader {
 pub struct RtpSyncPacket {
     pub header: RtpHeader,
     pub rtp_timestamp_latency: u32,
-    pub curr_time: ntp_t,
+    pub curr_time: NtpTime,
     pub rtp_timestamp: u32,
+}
+
+impl Serializable for RtpSyncPacket {
+    fn size(&self) -> usize {
+        4 + 16
+    }
+
+    fn serialize(&self, writer: &mut Write) -> io::Result<()> {
+        writer.write_u8(self.header.proto)?;
+        writer.write_u8(self.header.type_)?;
+        writer.write_u16::<BE>(self.header.seq)?;
+
+        writer.write_u32::<BE>(self.rtp_timestamp_latency)?;
+        self.curr_time.serialize(writer)?;
+        writer.write_u32::<BE>(self.rtp_timestamp)
+    }
 }
 
 pub struct RtpAudioPacket {

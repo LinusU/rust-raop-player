@@ -1,7 +1,8 @@
 use crate::alac_encoder::AlacEncoder;
-use crate::bindings::{get_ntp, rtp_header_t, free, pcm_to_alac_raw, malloc, rtp_sync_pkt_t, ntp_t, usleep, MAX_SAMPLES_PER_CHUNK, RAOP_LATENCY_MIN, aes_context, aes_set_key};
+use crate::bindings::{get_ntp, rtp_header_t, free, pcm_to_alac_raw, malloc, ntp_t, usleep, MAX_SAMPLES_PER_CHUNK, RAOP_LATENCY_MIN, aes_context, aes_set_key};
+use crate::ntp::NtpTime;
 use crate::rtsp_client::RTSPClient;
-use crate::rtp::{RtpHeader, RtpAudioPacket, RtpAudioRetransmissionPacket};
+use crate::rtp::{RtpHeader, RtpAudioPacket, RtpAudioRetransmissionPacket, RtpSyncPacket};
 use crate::serialization::Serializable;
 
 use std::mem::size_of;
@@ -841,30 +842,27 @@ fn _send_sync(socket: &UdpSocket, status: &mut Status, sample_rate: u32, latency
     if status.state != RaopState::Streaming { return Ok(()); }
 
     let timestamp = status.head_ts;
-    let now = TS2NTP(timestamp, sample_rate);
+    let now = NtpTime::from_timestamp(timestamp, sample_rate);
 
-    let rsp = rtp_sync_pkt_t {
-        hdr: rtp_header_t {
+    let rsp = RtpSyncPacket {
+        header: RtpHeader {
             proto: 0x80 | if first { 0x10 } else { 0x00 },
             type_: 0x54 | 0x80,
             // seems that seq=7 shall be forced
-            seq: [0, 7],
+            seq: 7,
         },
 
-        // set the NTP time in network order
-        curr_time: ntp_t {
-            seconds: SEC(now).to_be(),
-            fraction: FRAC(now).to_be(),
-        },
+        // set the NTP time
+        curr_time: now,
 
         // The DAC time is synchronized with gettime_ms(), minus the latency.
-        rtp_timestamp: (timestamp as u32).to_be(),
-        rtp_timestamp_latency: ((timestamp - latency_frames as u64) as u32).to_be(),
+        rtp_timestamp: (timestamp as u32),
+        rtp_timestamp_latency: ((timestamp - latency_frames as u64) as u32),
     };
 
-    let n = socket.send(unsafe { any_as_u8_slice(&rsp) })?;
+    let n = socket.send(&rsp.as_bytes())?;
 
-    debug!("sync ntp:{}.{} (ts:{})", SEC(now), FRAC(now), status.head_ts);
+    debug!("sync ntp:{} (ts:{})", now, status.head_ts);
 
     if n == 0 { info!("write, disconnected on the other end"); }
 

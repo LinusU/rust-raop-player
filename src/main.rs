@@ -24,6 +24,7 @@ use std::fs::File;
 
 // Local dependencies
 mod alac_encoder;
+mod ntp;
 mod raop_client;
 mod rtp;
 mod rtsp_client;
