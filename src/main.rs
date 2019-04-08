@@ -27,6 +27,7 @@ mod alac_encoder;
 mod raop_client;
 mod rtp;
 mod rtsp_client;
+mod serialization;
 use crate::raop_client::{Codec, Crypto, RaopClient};
 
 const USAGE: &'static str = "

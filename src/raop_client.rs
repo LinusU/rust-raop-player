@@ -1,7 +1,8 @@
 use crate::alac_encoder::AlacEncoder;
 use crate::bindings::{get_ntp, rtp_header_t, free, pcm_to_alac_raw, malloc, rtp_sync_pkt_t, ntp_t, usleep, MAX_SAMPLES_PER_CHUNK, RAOP_LATENCY_MIN, aes_context, aes_set_key};
 use crate::rtsp_client::RTSPClient;
-use crate::rtp::{RtpHeader, RtpAudioPacket};
+use crate::rtp::{RtpHeader, RtpAudioPacket, RtpAudioRetransmissionPacket};
+use crate::serialization::Serializable;
 
 use std::mem::size_of;
 use std::net::{UdpSocket};
@@ -1025,7 +1026,7 @@ fn _rtp_control_thread(running: Arc<AtomicBool>, socket_mutex: Arc<Mutex<UdpSock
                     if status.backlog[index].as_ref().map(|e| e.seq_number).unwrap_or(0) == lost.seq_number + i {
                         if let Some(ref entry) = status.backlog[index] {
                             *retransmit_mutex.lock().unwrap() += 1;
-                            socket.send(&entry.packet.as_retransmission_packet_bytes()).unwrap();
+                            socket.send(&RtpAudioRetransmissionPacket::wrap(&entry.packet).as_bytes()).unwrap();
                         } else {
                             // packet have been released meanwhile, be extra cautious
                             missed += 1;

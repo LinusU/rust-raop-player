@@ -1,4 +1,6 @@
 use crate::bindings::{ntp_t};
+use crate::serialization::Serializable;
+use std::io::{self, Write};
 
 use byteorder::{BE, WriteBytesExt};
 
@@ -22,44 +24,45 @@ pub struct RtpAudioPacket {
     pub data: Vec<u8>,
 }
 
-impl RtpAudioPacket {
-    pub fn size(&self) -> usize {
+impl Serializable for RtpAudioPacket {
+    fn size(&self) -> usize {
         4 + 8 + self.data.len()
     }
 
-    pub fn as_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::<u8>::with_capacity(self.size());
+    fn serialize(&self, writer: &mut Write) -> io::Result<()> {
+        writer.write_u8(self.header.proto)?;
+        writer.write_u8(self.header.type_)?;
+        writer.write_u16::<BE>(self.header.seq)?;
 
-        bytes.push(self.header.proto);
-        bytes.push(self.header.type_);
-        bytes.write_u16::<BE>(self.header.seq).unwrap();
+        writer.write_u32::<BE>(self.timestamp)?;
+        writer.write_u32::<BE>(self.ssrc)?;
 
-        bytes.write_u32::<BE>(self.timestamp).unwrap();
-        bytes.write_u32::<BE>(self.ssrc).unwrap();
+        writer.write_all(&self.data)
+    }
+}
 
-        bytes.extend_from_slice(&self.data);
+pub struct RtpAudioRetransmissionPacket<'a> {
+    pub packet: &'a RtpAudioPacket,
+}
 
-        bytes
+impl<'a> RtpAudioRetransmissionPacket<'a> {
+    pub fn wrap(packet: &RtpAudioPacket) -> RtpAudioRetransmissionPacket {
+        RtpAudioRetransmissionPacket { packet }
+    }
+}
+
+impl<'a> Serializable for RtpAudioRetransmissionPacket<'a> {
+    fn size(&self) -> usize {
+        4 + self.packet.size()
     }
 
-    pub fn as_retransmission_packet_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::<u8>::with_capacity(self.size());
-
+    fn serialize(&self, writer: &mut Write) -> io::Result<()> {
         // Retransmission header:
-        bytes.push(0x80);
-        bytes.push(0x56 | 0x80);
-        bytes.push(0x00);
-        bytes.push(0x01);
+        writer.write_u8(0x80)?;
+        writer.write_u8(0x56 | 0x80)?;
+        writer.write_u8(0x00)?;
+        writer.write_u8(0x01)?;
 
-        bytes.push(self.header.proto);
-        bytes.push(self.header.type_);
-        bytes.write_u16::<BE>(self.header.seq).unwrap();
-
-        bytes.write_u32::<BE>(self.timestamp).unwrap();
-        bytes.write_u32::<BE>(self.ssrc).unwrap();
-
-        bytes.extend_from_slice(&self.data);
-
-        bytes
+        self.packet.serialize(writer)
     }
 }
