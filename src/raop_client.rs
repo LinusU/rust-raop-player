@@ -1,5 +1,5 @@
 use crate::alac_encoder::AlacEncoder;
-use crate::bindings::{free, pcm_to_alac_raw, malloc, usleep, MAX_SAMPLES_PER_CHUNK, RAOP_LATENCY_MIN, aes_context, aes_set_key};
+use crate::bindings::{free, pcm_to_alac_raw, malloc, MAX_SAMPLES_PER_CHUNK, RAOP_LATENCY_MIN, aes_context, aes_set_key};
 use crate::ntp::NtpTime;
 use crate::rtsp_client::RTSPClient;
 use crate::rtp::{RtpHeader, RtpAudioPacket, RtpAudioRetransmissionPacket, RtpLostPacket, RtpSyncPacket, RtpTimePacket};
@@ -913,7 +913,7 @@ fn _rtp_timing_thread(running: Arc<AtomicBool>, socket_mutex: Arc<Mutex<UdpSocke
 
         if n == 0 {
             error!("read, disconnected on the other end");
-            unsafe { usleep(100000); }
+            thread::sleep(::std::time::Duration::from_millis(100));
             continue;
         }
 
