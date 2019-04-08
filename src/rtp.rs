@@ -4,10 +4,36 @@ use std::io::{self, Read, Write};
 
 use byteorder::{BE, ReadBytesExt, WriteBytesExt};
 
+const RETRANSMISSION_HEADER: RtpHeader = RtpHeader { proto: 0x80, type_: 0x56 | 0x80, seq: 1 };
+
 pub struct RtpHeader {
     pub proto: u8,
     pub type_: u8,
     pub seq: u16,
+}
+
+impl Deserializable for RtpHeader {
+    const SIZE: usize = 4;
+
+    fn deserialize(reader: &mut Read) -> io::Result<RtpHeader> {
+        let proto = reader.read_u8()?;
+        let type_ = reader.read_u8()?;
+        let seq = reader.read_u16::<BE>()?;
+
+        Ok(RtpHeader { proto, type_, seq })
+    }
+}
+
+impl Serializable for RtpHeader {
+    fn size(&self) -> usize {
+        RtpHeader::SIZE
+    }
+
+    fn serialize(&self, writer: &mut Write) -> io::Result<()> {
+        writer.write_u8(self.proto)?;
+        writer.write_u8(self.type_)?;
+        writer.write_u16::<BE>(self.seq)
+    }
 }
 
 pub struct RtpSyncPacket {
@@ -19,14 +45,11 @@ pub struct RtpSyncPacket {
 
 impl Serializable for RtpSyncPacket {
     fn size(&self) -> usize {
-        4 + 16
+        self.header.size() + 16
     }
 
     fn serialize(&self, writer: &mut Write) -> io::Result<()> {
-        writer.write_u8(self.header.proto)?;
-        writer.write_u8(self.header.type_)?;
-        writer.write_u16::<BE>(self.header.seq)?;
-
+        self.header.serialize(writer)?;
         writer.write_u32::<BE>(self.rtp_timestamp_latency)?;
         self.curr_time.serialize(writer)?;
         writer.write_u32::<BE>(self.rtp_timestamp)
@@ -42,17 +65,13 @@ pub struct RtpAudioPacket {
 
 impl Serializable for RtpAudioPacket {
     fn size(&self) -> usize {
-        4 + 8 + self.data.len()
+        self.header.size() + 8 + self.data.len()
     }
 
     fn serialize(&self, writer: &mut Write) -> io::Result<()> {
-        writer.write_u8(self.header.proto)?;
-        writer.write_u8(self.header.type_)?;
-        writer.write_u16::<BE>(self.header.seq)?;
-
+        self.header.serialize(writer)?;
         writer.write_u32::<BE>(self.timestamp)?;
         writer.write_u32::<BE>(self.ssrc)?;
-
         writer.write_all(&self.data)
     }
 }
@@ -69,16 +88,11 @@ impl<'a> RtpAudioRetransmissionPacket<'a> {
 
 impl<'a> Serializable for RtpAudioRetransmissionPacket<'a> {
     fn size(&self) -> usize {
-        4 + self.packet.size()
+        RETRANSMISSION_HEADER.size() + self.packet.size()
     }
 
     fn serialize(&self, writer: &mut Write) -> io::Result<()> {
-        // Retransmission header:
-        writer.write_u8(0x80)?;
-        writer.write_u8(0x56 | 0x80)?;
-        writer.write_u8(0x00)?;
-        writer.write_u8(0x01)?;
-
+        RETRANSMISSION_HEADER.serialize(writer)?;
         self.packet.serialize(writer)
     }
 }
@@ -95,26 +109,13 @@ impl Deserializable for RtpTimePacket {
     const SIZE: usize = 4 + 4 + NtpTime::SIZE + NtpTime::SIZE + NtpTime::SIZE;
 
     fn deserialize(reader: &mut Read) -> io::Result<RtpTimePacket> {
-        let proto = reader.read_u8()?;
-        let type_ = reader.read_u8()?;
-        let seq = reader.read_u16::<BE>()?;
-
+        let header = RtpHeader::deserialize(reader)?;
         let dummy = reader.read_u32::<BE>()?;
         let ref_time = NtpTime::deserialize(reader)?;
         let recv_time = NtpTime::deserialize(reader)?;
         let send_time = NtpTime::deserialize(reader)?;
 
-        Ok(RtpTimePacket {
-            header: RtpHeader {
-                proto,
-                type_,
-                seq,
-            },
-            dummy,
-            ref_time,
-            recv_time,
-            send_time,
-        })
+        Ok(RtpTimePacket { header, dummy, ref_time, recv_time, send_time })
     }
 }
 
@@ -124,10 +125,7 @@ impl Serializable for RtpTimePacket {
     }
 
     fn serialize(&self, writer: &mut Write) -> io::Result<()> {
-        writer.write_u8(self.header.proto)?;
-        writer.write_u8(self.header.type_)?;
-        writer.write_u16::<BE>(self.header.seq)?;
-
+        self.header.serialize(writer)?;
         writer.write_u32::<BE>(self.dummy)?;
         self.ref_time.serialize(writer)?;
         self.recv_time.serialize(writer)?;
