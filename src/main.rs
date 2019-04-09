@@ -24,12 +24,15 @@ use std::fs::File;
 
 // Local dependencies
 mod alac_encoder;
+mod codec;
 mod ntp;
 mod raop_client;
 mod rtp;
 mod rtsp_client;
 mod serialization;
-use crate::raop_client::{Codec, Crypto, RaopClient};
+
+use crate::codec::Codec;
+use crate::raop_client::{Crypto, RaopClient};
 
 const USAGE: &'static str = "
 Usage:
@@ -106,12 +109,12 @@ fn main() -> Result<(), Box<std::error::Error>> {
     stderrlog::new().verbosity(args.flag_d).timestamp(stderrlog::Timestamp::Microsecond).color(stderrlog::ColorChoice::Never).init().unwrap();
 
     let host = Ipv4Addr::UNSPECIFIED;
-    let codec = if args.flag_a { Codec::ALAC } else { Codec::PCM };
+    let codec = Codec::new(args.flag_a, MAX_SAMPLES_PER_CHUNK, 44100, 16, 2);
     let crypto = if args.flag_e { Crypto::RSA } else { Crypto::Clear };
     let volume = RaopClient::float_volume(args.flag_v);
     let mut infile = open_file(args.arg_filename);
 
-    let mut raopcl = RaopClient::connect(host, codec, MAX_SAMPLES_PER_CHUNK, args.flag_l, crypto, false, None, None, None, 44100, 16, 2, volume, args.arg_server_ip, args.flag_p, true).unwrap();
+    let mut raopcl = RaopClient::connect(host, codec, args.flag_l, crypto, false, None, None, None, volume, args.arg_server_ip, args.flag_p, true).unwrap();
 
     unsafe {
         let latency = raopcl.latency();

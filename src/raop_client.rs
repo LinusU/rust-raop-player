@@ -1,5 +1,5 @@
-use crate::alac_encoder::AlacEncoder;
-use crate::bindings::{free, pcm_to_alac_raw, malloc, MAX_SAMPLES_PER_CHUNK, RAOP_LATENCY_MIN, aes_context, aes_set_key};
+use crate::bindings::{MAX_SAMPLES_PER_CHUNK, RAOP_LATENCY_MIN, aes_context, aes_set_key};
+use crate::codec::Codec;
 use crate::ntp::NtpTime;
 use crate::rtsp_client::RTSPClient;
 use crate::rtp::{RtpHeader, RtpAudioPacket, RtpAudioRetransmissionPacket, RtpLostPacket, RtpSyncPacket, RtpTimePacket};
@@ -7,7 +7,6 @@ use crate::serialization::{Deserializable, Serializable};
 
 use std::net::{UdpSocket};
 use std::net::Ipv4Addr;
-use std::ptr;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
@@ -92,15 +91,6 @@ enum RaopState {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum Codec {
-    PCM = 0,
-    ALACRaw = 1,
-    ALAC = 2,
-    AAC = 3,
-    AALELC = 4,
-}
-
-#[derive(Clone, Copy, PartialEq)]
 pub enum Crypto {
     Clear = 0,
     RSA = 1,
@@ -161,11 +151,6 @@ pub struct RaopClient {
 
     auth: bool,
 
-    chunk_length: u32,
-    sample_rate: u32,
-    sample_size: u32,
-    channels: u8,
-
     codec: Codec,
     crypto: Crypto,
     meta_data_capabilities: MetaDataCapabilities,
@@ -196,13 +181,12 @@ pub struct RaopClient {
     ctrl_running: Arc<AtomicBool>,
     ctrl_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
 
-    alac_codec: Arc<Mutex<Option<AlacEncoder>>>,
     rtsp_client: Arc<Mutex<RTSPClient>>,
 }
 
 impl RaopClient {
-    pub fn connect(local_addr: Ipv4Addr, codec: Codec, chunk_length: u32, latency_frames: u32, crypto: Crypto, auth: bool, secret: Option<&str>, et: Option<&str>, md: Option<&str>, sample_rate: u32, sample_size: u32, channels: u8, volume: f32, remote_addr: Ipv4Addr, rtsp_port: u16, set_volume: bool) -> Result<RaopClient, Box<std::error::Error>> {
-        if chunk_length > MAX_SAMPLES_PER_CHUNK {
+    pub fn connect(local_addr: Ipv4Addr, codec: Codec, latency_frames: u32, crypto: Crypto, auth: bool, secret: Option<&str>, et: Option<&str>, md: Option<&str>, volume: f32, remote_addr: Ipv4Addr, rtsp_port: u16, set_volume: bool) -> Result<RaopClient, Box<std::error::Error>> {
+        if codec.chunk_length() > MAX_SAMPLES_PER_CHUNK {
             panic!("Chunk length must below {}", MAX_SAMPLES_PER_CHUNK);
         }
 
@@ -219,21 +203,7 @@ impl RaopClient {
             progress: md.map(|md| md.contains('2')).unwrap_or(false),
         };
 
-        let mut codec = codec;
-        let mut alac_codec: Option<AlacEncoder>;
-
-        if codec == Codec::ALAC {
-            alac_codec = AlacEncoder::new(chunk_length, sample_rate, sample_size, channels);
-
-            if alac_codec.is_none() {
-                warn!("cannot create ALAC codec");
-                codec = Codec::ALACRaw;
-            }
-        } else {
-            alac_codec = None;
-        }
-
-        info!("using {} coding", if alac_codec.is_some() { "ALAC" } else { "PCM" });
+        info!("using {} coding", codec);
 
         let iv: [u8; 16usize] = random();
         let nv: [u8; 16usize] = iv;
@@ -281,36 +251,7 @@ impl RaopClient {
             remote_addr,
         );
 
-        match codec {
-            Codec::ALACRaw => {
-                sdp.push_str(format!(
-                    "m=audio 0 RTP/AVP 96\r\na=rtpmap:96 AppleLossless\r\na=fmtp:96 {}d 0 {} 40 10 14 {} 255 0 0 {}\r\n",
-                    chunk_length,
-                    sample_size,
-                    channels,
-                    sample_rate,
-                ).as_str());
-            },
-            Codec::ALAC => {
-                sdp.push_str(format!(
-                    "m=audio 0 RTP/AVP 96\r\na=rtpmap:96 AppleLossless\r\na=fmtp:96 {}d 0 {} 40 10 14 {} 255 0 0 {}\r\n",
-                    chunk_length,
-                    sample_size,
-                    channels,
-                    sample_rate,
-                ).as_str());
-            },
-            Codec::PCM => {
-                sdp.push_str(format!(
-                    "m=audio 0 RTP/AVP 96\r\na=rtpmap:96 L{}/{}/{}\r\n",
-                    sample_size,
-                    sample_rate,
-                    channels,
-                ).as_str());
-            },
-            Codec::AAC => panic!("Not implemented"),
-            Codec::AALELC => panic!("Not implemented"),
-        }
+        sdp.push_str(codec.sdp().as_str());
 
         match crypto {
             Crypto::Clear => {},
@@ -417,7 +358,7 @@ impl RaopClient {
             ],
         };
 
-        let record_headers = rtsp_client.record(status.seq_number + 1, NtpTime::now().into_timestamp(sample_rate))?;
+        let record_headers = rtsp_client.record(status.seq_number + 1, NtpTime::now().into_timestamp(codec.sample_rate()))?;
         let returned_latency = record_headers.iter().find(|header| header.0.to_lowercase() == "audio-latency").map(|header| header.1.as_str());
 
         if let Some(returned_latency) = returned_latency {
@@ -436,6 +377,7 @@ impl RaopClient {
             let sane_ref = Arc::clone(&sane_mutex);
             let retransmit_ref = Arc::clone(&retransmit_mutex);
             let latency_frames_ref = Arc::clone(&latency_frames_mutex);
+            let sample_rate = codec.sample_rate();
 
             Arc::new(Mutex::new(Some(thread::spawn(move || { _rtp_control_thread(ctrl_running_ref, rtp_ctrl_ref, status_ref, sane_ref, retransmit_ref, latency_frames_ref, sample_rate); }))))
         };
@@ -452,10 +394,6 @@ impl RaopClient {
             local_addr,
             rtsp_port,
             auth,
-            chunk_length,
-            sample_rate,
-            sample_size,
-            channels,
             codec,
             crypto,
             meta_data_capabilities,
@@ -484,7 +422,6 @@ impl RaopClient {
             ctrl_running: ctrl_running_mutex,
             ctrl_thread: ctrl_thread_mutex,
 
-            alac_codec: Arc::new(Mutex::new(alac_codec)),
             rtsp_client: Arc::new(Mutex::new(rtsp_client)),
         };
 
@@ -508,11 +445,11 @@ impl RaopClient {
     }
 
     pub fn sample_rate(&self) -> u32 {
-        self.sample_rate
+        self.codec.sample_rate()
     }
 
     pub fn is_playing(&self) -> bool {
-        let now_ts = NtpTime::now().into_timestamp(self.sample_rate);
+        let now_ts = NtpTime::now().into_timestamp(self.codec.sample_rate());
         trace!("[is_playing] - aquiring status");
         let status = self.status.lock().unwrap();
         trace!("[is_playing] - got status");
@@ -533,7 +470,7 @@ impl RaopClient {
         if status.flushing {
             let now = NtpTime::now();
 
-            now_ts = now.into_timestamp(self.sample_rate);
+            now_ts = now.into_timestamp(self.codec.sample_rate());
 
             // Not flushed yet, but we have time to wait, so pretend we are full
             if status.state != RaopState::Flushed && (!status.start_ts > 0 || status.start_ts > now_ts + self.latency() as u64) {
@@ -560,7 +497,7 @@ impl RaopClient {
                     trace!("[accept_frames] - aquiring latency_frames");
                     let latency_frames = self.latency_frames.lock().unwrap();
                     trace!("[accept_frames] - got latency_frames");
-                    _send_sync(&socket, &mut status, self.sample_rate, *latency_frames, true)?;
+                    _send_sync(&socket, &mut status, self.codec.sample_rate(), *latency_frames, true)?;
                     trace!("[accept_frames] - dropping latency_frames");
                     trace!("[accept_frames] - dropping ctrl socket");
                 }
@@ -569,13 +506,13 @@ impl RaopClient {
             } else {
                 let mut n: u16;
                 let mut i: u16;
-                let chunks = (self.latency() / self.chunk_length as u32) as u16;
+                let chunks = (self.latency() / self.codec.chunk_length() as u32) as u16;
 
                 // if un-pausing w/o start_time, can anticipate as we have buffer
                 status.first_ts = if status.start_ts > 0 { status.start_ts } else { now_ts - self.latency() as u64 };
 
                 // last head_ts shall be first + raopcl_latency - chunk_length
-                status.head_ts = status.first_ts - self.chunk_length as u64;
+                status.head_ts = status.first_ts - self.codec.chunk_length() as u64;
 
                 if first_pkt {
                     trace!("[accept_frames] - aquiring ctrl socket");
@@ -584,7 +521,7 @@ impl RaopClient {
                     trace!("[accept_frames] - aquiring latency_frames");
                     let latency_frames = self.latency_frames.lock().unwrap();
                     trace!("[accept_frames] - got latency_frames");
-                    _send_sync(&socket, &mut status, self.sample_rate, *latency_frames, true)?;
+                    _send_sync(&socket, &mut status, self.codec.sample_rate(), *latency_frames, true)?;
                     trace!("[accept_frames] - dropping latency_frames");
                     trace!("[accept_frames] - dropping ctrl socket");
                 }
@@ -626,7 +563,7 @@ impl RaopClient {
                             packet: entry.packet,
                         });
 
-                        status.head_ts += self.chunk_length as u64;
+                        status.head_ts += self.codec.chunk_length() as u64;
 
                         i += 1;
                     }
@@ -644,10 +581,10 @@ impl RaopClient {
         if status.pause_ts > 0 {
             now_ts = status.pause_ts;
         } else {
-            now_ts = NtpTime::now().into_timestamp(self.sample_rate);
+            now_ts = NtpTime::now().into_timestamp(self.codec.sample_rate());
         }
 
-        let accept = now_ts >= status.head_ts + (self.chunk_length as u64);
+        let accept = now_ts >= status.head_ts + (self.codec.chunk_length() as u64);
 
         trace!("[accept_frames] - dropping status");
         return Ok(accept);
@@ -676,40 +613,14 @@ impl RaopClient {
             trace!("[send_chunk] - aquiring latency_frames");
             let latency_frames = self.latency_frames.lock().unwrap();
             trace!("[send_chunk] - got latency_frames");
-            _send_sync(&socket, &mut status, self.sample_rate, *latency_frames, true)?;
+            _send_sync(&socket, &mut status, self.codec.sample_rate(), *latency_frames, true)?;
             trace!("[send_chunk] - dropping latency_frames");
             trace!("[send_chunk] - dropping ctrl socket");
         }
 
-        let mut encoded: *mut u8 = ptr::null_mut();
-        let mut size: i32 = 0;
+        let encoded = self.codec.encode_chunk(sample, frames);
 
-        match self.codec {
-            Codec::ALAC => {
-                let alac_codec = self.alac_codec.lock().unwrap();
-                alac_codec.as_ref().unwrap().encode_chunk(sample, frames, &mut encoded, &mut size);
-            },
-            Codec::ALACRaw => {
-                unsafe { pcm_to_alac_raw(&mut (*sample)[0], frames as i32, &mut encoded, &mut size, self.chunk_length as i32); }
-            },
-            Codec::PCM => {
-                size = (frames * 4) as i32;
-                encoded = unsafe { malloc(frames * 4) as *mut u8 };
-                for offset in (0..(size as usize)).step_by(4) {
-                    unsafe {
-                        *encoded.offset((offset + 0) as isize) = sample[offset + 1];
-                        *encoded.offset((offset + 1) as isize) = sample[offset + 0];
-                        *encoded.offset((offset + 2) as isize) = sample[offset + 3];
-                        *encoded.offset((offset + 3) as isize) = sample[offset + 2];
-                    }
-                }
-            }
-            _ => {
-                panic!("Not implemented");
-            }
-        }
-
-        *playtime = TS2NTP(status.head_ts + self.latency() as u64, self.sample_rate);
+        *playtime = TS2NTP(status.head_ts + self.latency() as u64, self.codec.sample_rate());
 
         trace!("sending audio ts:{} (pt:{}.{} now:{}) ", status.head_ts, SEC(*playtime), FRAC(*playtime), NtpTime::now());
 
@@ -723,7 +634,7 @@ impl RaopClient {
             },
             timestamp: status.head_ts as u32,
             ssrc: (*self.ssrc.lock().unwrap() as u32),
-            data: unsafe { std::slice::from_raw_parts(encoded, size as usize).to_vec() },
+            data: encoded,
         };
         status.first_pkt = false;
 
@@ -743,7 +654,7 @@ impl RaopClient {
             packet: packet,
         });
 
-        status.head_ts += self.chunk_length as u64;
+        status.head_ts += self.codec.chunk_length() as u64;
 
         if NTP2MS(*playtime) % 10000 < 8 {
             let sane = self.sane.lock().unwrap();
@@ -752,8 +663,6 @@ impl RaopClient {
                 now.millis(), MSEC(*playtime), status.head_ts, status.seq_number,
                 retransmit, sane.audio.avail, sane.audio.send, sane.audio.select);
         }
-
-        unsafe { free(encoded as *mut std::ffi::c_void); }
 
         trace!("[send_chunk] - dropping status");
 
