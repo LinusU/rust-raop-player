@@ -13,13 +13,17 @@ mod bindings;
 extern crate serde_derive;
 use docopt::Docopt;
 
-// General dependencies
-use std::net::Ipv4Addr;
-use stderrlog;
-use log::info;
-use std::io;
+// Standard dependencies
 use std::fs::File;
+use std::io;
+use std::net::Ipv4Addr;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+// General dependencies
+use ctrlc;
+use log::info;
+use stderrlog;
 
 // Local dependencies
 mod alac_encoder;
@@ -101,13 +105,21 @@ fn main() -> Result<(), Box<std::error::Error>> {
     info!("connected to {} on port {}, player latency is {} ms", args.arg_server_ip, args.flag_p, TS2MS(latency, raopcl.sample_rate()));
 
     let start = NtpTime::now();
-    let status = Status::Playing;
+    let status = Arc::new(Mutex::new(Status::Playing));
 
     let mut buf = [0; (MAX_SAMPLES_PER_CHUNK as usize) * 4];
 
     let mut last = NtpTime::ZERO;
     let mut frames: u64 = 0;
     let mut playtime: u64 = 0;
+
+    {
+        let status_handle = status.clone();
+        ctrlc::set_handler(move || {
+            info!("Recevied SIGINT, stopping playback");
+            *status_handle.lock().unwrap() = Status::Stopped;
+        }).unwrap();
+    }
 
     loop {
         let now = NtpTime::now();
@@ -122,11 +134,16 @@ fn main() -> Result<(), Box<std::error::Error>> {
             }
         }
 
-        if status == Status::Playing && raopcl.accept_frames()? {
+        if *status.lock().unwrap() == Status::Playing && raopcl.accept_frames()? {
             let n = infile.read(&mut buf).unwrap();
             if n == 0 { break }
             raopcl.send_chunk(&mut buf, n / 4, &mut playtime)?;
             frames += (n / 4) as u64;
+        }
+
+        if *status.lock().unwrap() == Status::Stopped {
+            raopcl.stop();
+            break
         }
 
         if !raopcl.is_playing() { break }

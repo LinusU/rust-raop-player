@@ -439,6 +439,15 @@ impl RaopClient {
         return return_;
     }
 
+    pub fn stop(&self) {
+        trace!("[stop] - aquiring status");
+        let mut status = self.status.lock().unwrap();
+        trace!("[stop] - got status");
+        status.flushing = true;
+        status.pause_ts = 0;
+        trace!("[stop] - dropping status");
+    }
+
     pub fn accept_frames(&self) -> Result<bool, Box<std::error::Error>> {
         let mut first_pkt = false;
         let mut now_ts: u64;
