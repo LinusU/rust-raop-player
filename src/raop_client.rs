@@ -1,4 +1,4 @@
-use crate::bindings::{MAX_SAMPLES_PER_CHUNK, RAOP_LATENCY_MIN, aes_context, aes_set_key};
+use crate::bindings::{MAX_SAMPLES_PER_CHUNK, aes_context, aes_set_key};
 use crate::codec::Codec;
 use crate::ntp::NtpTime;
 use crate::rtsp_client::RTSPClient;
@@ -192,7 +192,7 @@ impl RaopClient {
 
         let secret = secret.map(|s| s.to_owned());
         let et = et.map(|s| s.to_owned());
-        let mut latency_frames = std::cmp::max(latency_frames, RAOP_LATENCY_MIN);
+        let mut latency_frames = std::cmp::max(latency_frames, LATENCY_MIN);
 
         // strcpy(raopcld->DACP_id, DACP_id ? DACP_id : "");
         // strcpy(raopcld->active_remote, active_remote ? active_remote : "");
