@@ -27,27 +27,6 @@ fn SEC(ntp: u64) -> u32 { (ntp >> 32) as u32 }
 fn FRAC(ntp: u64) -> u32 { ntp as u32 }
 fn MSEC(ntp: u64) -> u32 { (((ntp >> 16) * 1000) >> 16) as u32 }
 
-unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
-    ::std::slice::from_raw_parts(
-        (p as *const T) as *const u8,
-        ::std::mem::size_of::<T>(),
-    )
-}
-
-unsafe fn any_as_u8_slice_len<T: Sized>(p: &T, len: usize) -> &[u8] {
-    ::std::slice::from_raw_parts(
-        (p as *const T) as *const u8,
-        len,
-    )
-}
-
-unsafe fn any_as_u8_mut_slice<T: Sized>(p: &mut T) -> &mut [u8] {
-    ::std::slice::from_raw_parts_mut(
-        (p as *mut T) as *mut u8,
-        ::std::mem::size_of::<T>(),
-    )
-}
-
 pub fn analyse_setup(setup_headers: Vec<(String, String)>) -> Result<(u16, u16, u16), Box<std::error::Error>> {
     // get transport (port ...) info
     let transport_header = setup_headers.iter().find(|header| header.0.to_lowercase() == "transport").map(|header| header.1.as_str());
