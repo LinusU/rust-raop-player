@@ -1,4 +1,4 @@
-use crate::bindings::{MAX_SAMPLES_PER_CHUNK, aes_context, aes_set_key};
+use crate::bindings::{aes_context, aes_set_key};
 use crate::codec::Codec;
 use crate::ntp::NtpTime;
 use crate::rtsp_client::RTSPClient;
@@ -18,6 +18,8 @@ const VOLUME_MIN: f32 = -30.0;
 const VOLUME_MAX: f32 = 0.0;
 const LATENCY_MIN: u32 = 11025;
 const MAX_BACKLOG: u16 = 512;
+
+pub const MAX_SAMPLES_PER_CHUNK: u32 = 352;
 
 fn NTP2MS(ntp: u64) -> u64 { (((ntp >> 10) * 1000) >> 22) }
 fn TS2NTP(ts: u64, rate: u32) -> u64 { ((((ts as u64) << 16) / (rate as u64)) << 16) }

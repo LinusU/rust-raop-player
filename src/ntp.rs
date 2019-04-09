@@ -1,6 +1,7 @@
 use std::io::{self, Read, Write};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use std::fmt::{self, Formatter, Display};
+use std::ops::Sub;
 
 use byteorder::{BE, ReadBytesExt, WriteBytesExt};
 
@@ -13,6 +14,8 @@ pub struct NtpTime {
 }
 
 impl NtpTime {
+    pub const ZERO: NtpTime = NtpTime { seconds: 0, fraction: 0 };
+
     pub fn now() -> NtpTime {
         let unix = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
 
@@ -39,6 +42,35 @@ impl NtpTime {
             seconds: (ntp >> 32) as u32,
             fraction: ntp as u32,
         }
+    }
+}
+
+impl Sub for NtpTime {
+    type Output = Duration;
+
+    fn sub(self, other: NtpTime) -> Duration {
+        if self.seconds < other.seconds {
+            panic!("Cannot create negative durations");
+        }
+
+        if self.seconds == other.seconds && self.fraction < other.fraction {
+            panic!("Cannot create negative durations");
+        }
+
+        let secs: u32;
+        let fraction: u32;
+
+        if self.fraction < other.fraction {
+            secs = self.seconds - other.seconds - 1;
+            fraction = std::u32::MAX - other.fraction + self.fraction;
+        } else {
+            secs = self.seconds - other.seconds;
+            fraction = self.fraction - other.fraction;
+        }
+
+        let nanos = ((fraction as f64) / (std::u32::MAX as f64)) * 1_000_000_000f64;
+
+        Duration::new(secs as u64, nanos as u32)
     }
 }
 

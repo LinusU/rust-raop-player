@@ -7,8 +7,6 @@ use openssl_sys;
 // Link in the C part of the program
 #[link(name="raop", kind="static")]
 mod bindings;
-use crate::bindings::*;
-use std::ptr;
 
 // Docopt
 #[macro_use]
@@ -21,6 +19,7 @@ use stderrlog;
 use log::info;
 use std::io;
 use std::fs::File;
+use std::time::Duration;
 
 // Local dependencies
 mod alac_encoder;
@@ -32,7 +31,8 @@ mod rtsp_client;
 mod serialization;
 
 use crate::codec::Codec;
-use crate::raop_client::{Crypto, RaopClient};
+use crate::ntp::NtpTime;
+use crate::raop_client::{Crypto, RaopClient, MAX_SAMPLES_PER_CHUNK};
 
 const USAGE: &'static str = "
 Usage:
@@ -62,29 +62,9 @@ struct Args {
     flag_help: bool,
 }
 
-impl From<Ipv4Addr> for in_addr {
-    fn from(ip: Ipv4Addr) -> in_addr {
-        in_addr { s_addr: u32::from(ip).swap_bytes() }
-    }
-}
-
-impl From<in_addr> for Ipv4Addr {
-    fn from(ip: in_addr) -> Ipv4Addr {
-        Ipv4Addr::from(ip.s_addr.swap_bytes())
-    }
-}
-
 fn NTP2MS(ntp: u64) -> u64 { (((ntp >> 10) * 1000) >> 22) }
-fn MS2NTP(ms: u64) -> u64 { (((ms << 22) / 1000) << 10) }
-// #define TIME_MS2NTP(time) raopcl_time32_to_ntp(time)
 fn TS2NTP(ts: u32, rate: u32) -> u64 { ((((ts as u64) << 16) / (rate as u64)) << 16) }
-// #define MS2TS(ms, rate) ((((u64_t) (ms)) * (rate)) / 1000)
 fn TS2MS(ts: u32, rate: u32) -> u64 { NTP2MS(TS2NTP(ts,rate)) }
-
-fn SEC(ntp: u64) -> u32 { (ntp >> 32) as u32 }
-fn FRAC(ntp: u64) -> u32 { ntp as u32 }
-// #define SECNTP(ntp) SEC(ntp),FRAC(ntp)
-// #define MSEC(ntp)  ((u32_t) ((((ntp) >> 16)*1000) >> 16))
 
 #[derive(PartialEq)]
 enum Status {
@@ -114,44 +94,42 @@ fn main() -> Result<(), Box<std::error::Error>> {
     let volume = RaopClient::float_volume(args.flag_v);
     let mut infile = open_file(args.arg_filename);
 
-    let mut raopcl = RaopClient::connect(host, codec, args.flag_l, crypto, false, None, None, None, volume, args.arg_server_ip, args.flag_p, true).unwrap();
+    let raopcl = RaopClient::connect(host, codec, args.flag_l, crypto, false, None, None, None, volume, args.arg_server_ip, args.flag_p, true).unwrap();
 
-    unsafe {
-        let latency = raopcl.latency();
+    let latency = raopcl.latency();
 
-        info!("connected to {} on port {}, player latency is {} ms", args.arg_server_ip, args.flag_p, TS2MS(latency, raopcl.sample_rate()));
+    info!("connected to {} on port {}, player latency is {} ms", args.arg_server_ip, args.flag_p, TS2MS(latency, raopcl.sample_rate()));
 
-        let start = get_ntp(ptr::null_mut());
-        let mut status = Status::Playing;
+    let start = NtpTime::now();
+    let status = Status::Playing;
 
-        let mut buf = [0; (MAX_SAMPLES_PER_CHUNK as usize) * 4];
+    let mut buf = [0; (MAX_SAMPLES_PER_CHUNK as usize) * 4];
 
-        let mut last: u64 = 0;
-        let mut frames: u64 = 0;
-        let mut playtime: u64 = 0;
+    let mut last = NtpTime::ZERO;
+    let mut frames: u64 = 0;
+    let mut playtime: u64 = 0;
 
-        loop {
-            let now = get_ntp(ptr::null_mut());
+    loop {
+        let now = NtpTime::now();
 
-            if (now - last) > MS2NTP(1000) {
-                last = now;
+        if (now - last) > Duration::from_secs(1) {
+            last = now;
 
-                if frames > 0 && frames > raopcl.latency().into() {
-                    info!("at {}.{} ({} ms after start), played {} ms",
-                        SEC(now), FRAC(now), NTP2MS(now - start),
-                        TS2MS((frames as u32) - raopcl.latency(), raopcl.sample_rate()));
-                }
+            if frames > 0 && frames > raopcl.latency().into() {
+                info!("at {} ({} ms after start), played {} ms",
+                    now, (now - start).as_millis(),
+                    TS2MS((frames as u32) - raopcl.latency(), raopcl.sample_rate()));
             }
-
-            if status == Status::Playing && raopcl.accept_frames()? {
-                let n = infile.read(&mut buf).unwrap();
-                if n == 0 { break }
-                raopcl.send_chunk(&mut buf, n / 4, &mut playtime)?;
-                frames += (n / 4) as u64;
-            }
-
-            if !raopcl.is_playing() { break }
         }
+
+        if status == Status::Playing && raopcl.accept_frames()? {
+            let n = infile.read(&mut buf).unwrap();
+            if n == 0 { break }
+            raopcl.send_chunk(&mut buf, n / 4, &mut playtime)?;
+            frames += (n / 4) as u64;
+        }
+
+        if !raopcl.is_playing() { break }
     }
 
     Ok(())
