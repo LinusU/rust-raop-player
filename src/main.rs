@@ -26,7 +26,6 @@ use log::info;
 use stderrlog;
 
 // Local dependencies
-mod alac_encoder;
 mod codec;
 mod ntp;
 mod raop_client;
@@ -98,7 +97,7 @@ fn main() -> Result<(), Box<std::error::Error>> {
     let volume = RaopClient::float_volume(args.flag_v);
     let mut infile = open_file(args.arg_filename);
 
-    let raopcl = RaopClient::connect(host, codec, args.flag_l, crypto, false, None, None, None, volume, args.arg_server_ip, args.flag_p, true).unwrap();
+    let mut raopcl = RaopClient::connect(host, codec, args.flag_l, crypto, false, None, None, None, volume, args.arg_server_ip, args.flag_p, true).unwrap();
 
     let latency = raopcl.latency();
 
@@ -137,7 +136,7 @@ fn main() -> Result<(), Box<std::error::Error>> {
         if *status.lock().unwrap() == Status::Playing && raopcl.accept_frames()? {
             let n = infile.read(&mut buf).unwrap();
             if n == 0 { break }
-            raopcl.send_chunk(&mut buf, n / 4, &mut playtime)?;
+            raopcl.send_chunk(&buf[0..n], &mut playtime)?;
             frames += (n / 4) as u64;
         }
 

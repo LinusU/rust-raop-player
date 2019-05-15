@@ -580,7 +580,7 @@ impl RaopClient {
         return Ok(accept);
     }
 
-    pub fn send_chunk(&self, sample: &mut [u8], frames: usize, playtime: &mut u64) -> Result<(), Box<std::error::Error>> {
+    pub fn send_chunk(&mut self, sample: &[u8], playtime: &mut u64) -> Result<(), Box<std::error::Error>> {
         let now = NtpTime::now();
 
         trace!("[send_chunk] - aquiring status");
@@ -608,7 +608,7 @@ impl RaopClient {
             trace!("[send_chunk] - dropping ctrl socket");
         }
 
-        let encoded = self.codec.encode_chunk(sample, frames);
+        let encoded = self.codec.encode_chunk(&sample);
 
         *playtime = TS2NTP(status.head_ts + self.latency() as u64, self.codec.sample_rate());
 
