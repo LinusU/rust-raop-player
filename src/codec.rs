@@ -1,5 +1,3 @@
-use crate::bindings::{malloc, free};
-
 use std::fmt::{self, Formatter, Display};
 
 use alac_encoder::{AlacEncoder, FormatDescription, MAX_ESCAPE_HEADER_BYTES};
@@ -85,21 +83,17 @@ impl Codec {
             },
             Codec::PCM { .. } => {
                 let size = sample.len();
-                let encoded = unsafe { malloc(sample.len()) as *mut u8 };
+                let mut encoded = Vec::with_capacity(size);
+                unsafe { encoded.set_len(size); }
+
                 for offset in (0..(size as usize)).step_by(4) {
-                    unsafe {
-                        *encoded.offset((offset + 0) as isize) = sample[offset + 1];
-                        *encoded.offset((offset + 1) as isize) = sample[offset + 0];
-                        *encoded.offset((offset + 2) as isize) = sample[offset + 3];
-                        *encoded.offset((offset + 3) as isize) = sample[offset + 2];
-                    }
+                    encoded[offset + 0] = sample[offset + 1];
+                    encoded[offset + 1] = sample[offset + 0];
+                    encoded[offset + 2] = sample[offset + 3];
+                    encoded[offset + 3] = sample[offset + 2];
                 }
 
-                let result = unsafe { std::slice::from_raw_parts(encoded, size as usize).to_vec() };
-
-                unsafe { free(encoded as *mut std::ffi::c_void); }
-
-                result
+                encoded
             },
         }
     }
