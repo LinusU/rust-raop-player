@@ -1,5 +1,4 @@
 use crate::bindings::{ed25519_public_key_size, ed25519_secret_key_size, ed25519_private_key_size, ed25519_signature_size, ed25519_CreateKeyPair, curve25519_dh_CalculatePublicKey, curve25519_dh_CreateSharedKey, ed25519_SignMessage};
-use crate::bindings::{CTR_BIG_ENDIAN, aes_ctr_context, aes_ctr_init, aes_ctr_encrypt};
 
 use openssl_sys::{SHA512_CTX, SHA512_Init, SHA512_Update, SHA512_Final};
 
@@ -11,6 +10,7 @@ use std::str::from_utf8;
 
 use hex::FromHex;
 use log::{error, info, debug};
+use openssl::symm::{Cipher, Mode, Crypter};
 use rand::random;
 
 enum Body<'a> {
@@ -78,7 +78,7 @@ impl RTSPClient {
 
         // get atv_pub and atv_data then create shared secret
         let atv_pub = &content[0..ed25519_public_key_size];
-        let atv_data = &content[(content.len() - ed25519_public_key_size)..];
+        let atv_data = &content[ed25519_public_key_size..];
         let mut shared_secret = [0u8; ed25519_secret_key_size];
         unsafe { curve25519_dh_CreateSharedKey(&mut shared_secret[0], &atv_pub[0], &mut verify_secret[0]); }
 
@@ -115,22 +115,22 @@ impl RTSPClient {
         }
 
         // encrypt the signed result + atv_data, add 4 NULL bytes at the beginning
-        let mut ctx: aes_ctr_context = unsafe { std::mem::uninitialized() };
-        let mut buf = [0u8; 4 + ed25519_public_key_size * 2];
-        let four_null_bytes = [0u8; 4];
+        let mut ctx = Crypter::new(Cipher::aes_128_ctr(), Mode::Encrypt, &aes_key, Some(&aes_iv))?;
+        let mut buf = [0u8; 4 + ed25519_signature_size];
 
-        // FIXME: https://github.com/philippe44/RAOP-Player/issues/12
-        unsafe {
-            aes_ctr_init(&mut ctx, &mut aes_key[0], &mut aes_iv[0], CTR_BIG_ENDIAN);
-            std::ptr::copy_nonoverlapping(atv_data.as_ptr(), buf.as_mut_ptr().offset(0), atv_data.len());
-            aes_ctr_encrypt(&mut ctx, &mut buf[0], buf.len());
-            std::ptr::copy_nonoverlapping(signed_keys.as_ptr(), buf.as_mut_ptr().offset(4), signed_keys.len());
-            aes_ctr_encrypt(&mut ctx, &mut buf[4], ed25519_signature_size);
-            std::ptr::copy_nonoverlapping(four_null_bytes.as_ptr(), buf.as_mut_ptr().offset(0), four_null_bytes.len());
-        }
-        let len = ed25519_signature_size + 4;
+        // Encrypt <atv_data>, discard result
+        ctx.update(&atv_data, &mut buf)?;
+        // Encrypt <signed> and keep result as the signature <signature> (64 bytes)
+        ctx.update(&signed_keys, &mut buf[4..])?;
 
-        self.exec_request("POST", Body::Blob { content_type: "application/octet-stream", content: &buf[0..len] }, vec!(), Some("/pair-verify"))
+        // Concatenate this <signature> with a 4 bytes header “\0x00\0x00\0x00\0x00”
+        buf[0] = 0;
+        buf[1] = 0;
+        buf[2] = 0;
+        buf[3] = 0;
+
+        // ...and send this in the body of an HTTP POST request
+        self.exec_request("POST", Body::Blob { content_type: "application/octet-stream", content: &buf }, vec!(), Some("/pair-verify"))
             .map_err(|err| { error!("AppleTV verify step 2 failed (pair again)"); err })
             .map(|_| ())
     }
