@@ -1,4 +1,3 @@
-use crate::bindings::memcpy;
 use crate::bindings::{ed25519_public_key_size, ed25519_secret_key_size, ed25519_private_key_size, ed25519_signature_size, ed25519_CreateKeyPair, curve25519_dh_CalculatePublicKey, curve25519_dh_CreateSharedKey, ed25519_SignMessage};
 use crate::bindings::{CTR_BIG_ENDIAN, aes_ctr_context, aes_ctr_init, aes_ctr_encrypt};
 
@@ -123,11 +122,11 @@ impl RTSPClient {
         // FIXME: https://github.com/philippe44/RAOP-Player/issues/12
         unsafe {
             aes_ctr_init(&mut ctx, &mut aes_key[0], &mut aes_iv[0], CTR_BIG_ENDIAN);
-            memcpy((&mut buf[0] as *mut u8) as *mut c_void, (&atv_data[0] as *const u8) as *const c_void, atv_data.len() as u64);
+            std::ptr::copy_nonoverlapping(atv_data.as_ptr(), buf.as_mut_ptr().offset(0), atv_data.len());
             aes_ctr_encrypt(&mut ctx, &mut buf[0], buf.len());
-            memcpy((&mut buf[4] as *mut u8) as *mut c_void, (&signed_keys[0] as *const u8) as *const c_void, signed_keys.len() as u64);
+            std::ptr::copy_nonoverlapping(signed_keys.as_ptr(), buf.as_mut_ptr().offset(4), signed_keys.len());
             aes_ctr_encrypt(&mut ctx, &mut buf[4], ed25519_signature_size);
-            memcpy((&mut buf[0] as *mut u8) as *mut c_void, (&four_null_bytes[0] as *const u8) as *const c_void, four_null_bytes.len() as u64);
+            std::ptr::copy_nonoverlapping(four_null_bytes.as_ptr(), buf.as_mut_ptr().offset(0), four_null_bytes.len());
         }
         let len = ed25519_signature_size + 4;
 
