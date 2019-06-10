@@ -1,9 +1,6 @@
 // FIXME: eventually remove these
 #![allow(non_snake_case, non_camel_case_types, non_upper_case_globals, dead_code)]
 
-// Required for linking towards openssl
-use openssl_sys;
-
 // Link in the C part of the program
 #[link(name="raop", kind="static")]
 mod bindings;
@@ -27,6 +24,7 @@ use stderrlog;
 
 // Local dependencies
 mod codec;
+mod crypto;
 mod ntp;
 mod raop_client;
 mod rtp;
@@ -34,8 +32,9 @@ mod rtsp_client;
 mod serialization;
 
 use crate::codec::Codec;
+use crate::crypto::Crypto;
 use crate::ntp::NtpTime;
-use crate::raop_client::{Crypto, RaopClient, MAX_SAMPLES_PER_CHUNK};
+use crate::raop_client::{RaopClient, MAX_SAMPLES_PER_CHUNK};
 
 const USAGE: &'static str = "
 Usage:
@@ -93,7 +92,7 @@ fn main() -> Result<(), Box<std::error::Error>> {
 
     let host = Ipv4Addr::UNSPECIFIED;
     let codec = Codec::new(args.flag_a, MAX_SAMPLES_PER_CHUNK, 44100, 16, 2);
-    let crypto = if args.flag_e { Crypto::RSA } else { Crypto::Clear };
+    let crypto = Crypto::new(args.flag_e);
     let volume = RaopClient::float_volume(args.flag_v);
     let mut infile = open_file(args.arg_filename);
 

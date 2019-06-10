@@ -1,5 +1,5 @@
-use crate::bindings::{aes_context, aes_set_key};
 use crate::codec::Codec;
+use crate::crypto::Crypto;
 use crate::ntp::NtpTime;
 use crate::rtsp_client::RTSPClient;
 use crate::rtp::{RtpHeader, RtpAudioPacket, RtpAudioRetransmissionPacket, RtpLostPacket, RtpSyncPacket, RtpTimePacket};
@@ -72,26 +72,10 @@ enum RaopState {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum Crypto {
-    Clear = 0,
-    RSA = 1,
-    FairPlay = 2,
-    MFiSAP = 3,
-    FairPlaySAP = 4,
-}
-
-#[derive(Clone, Copy, PartialEq)]
 struct MetaDataCapabilities {
     text: bool,
     artwork: bool,
     progress: bool,
-}
-
-struct AesContext {
-    ctx: aes_context,
-    iv: [u8; 16usize],
-    nv: [u8; 16usize],
-    key: [u8; 16usize],
 }
 
 struct BacklogEntry {
@@ -154,8 +138,6 @@ pub struct RaopClient {
     latency_frames: Arc<Mutex<u32>>,
     volume: Arc<Mutex<f32>>,
 
-    aes: Arc<Mutex<AesContext>>,
-
     time_running: Arc<AtomicBool>,
     time_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
 
@@ -185,13 +167,6 @@ impl RaopClient {
         };
 
         info!("using {} coding", codec);
-
-        let iv: [u8; 16usize] = random();
-        let nv: [u8; 16usize] = iv;
-        let mut key: [u8; 16usize] = random();
-        let mut ctx = aes_context { erk: [0; 64usize], drk: [0; 64usize], nr: 0 };
-
-        unsafe { aes_set_key(&mut ctx, &mut key[0], 128); }
 
         let retransmit_mutex = Arc::new(Mutex::new(0));
 
@@ -233,34 +208,7 @@ impl RaopClient {
         );
 
         sdp.push_str(codec.sdp().as_str());
-
-        match crypto {
-            Crypto::Clear => {},
-            Crypto::RSA => {
-                // char *key = NULL, *iv = NULL, *buf;
-                // u8_t rsakey[512];
-                // int i;
-                //
-                // i = rsa_encrypt(p->key, 16, rsakey);
-                // base64_encode(rsakey, i, &key);
-                // remove_char_from_string(key, '=');
-                // base64_encode(p->iv, 16, &iv);
-                // remove_char_from_string(iv, '=');
-                // buf = malloc(strlen(key) + strlen(iv) + 128);
-                // sprintf(buf, "a=rsaaeskey:%s\r\n"
-                //             "a=aesiv:%s\r\n",
-                //             key, iv);
-                // strcat(sdp, buf);
-                // free(key);
-                // free(iv);
-                // free(buf);
-                // break;
-                panic!("unsupported encryption: RSA")
-            },
-            Crypto::FairPlay => panic!("unsupported encryption: FairPlay"),
-            Crypto::FairPlaySAP => panic!("unsupported encryption: FairPlaySAP"),
-            Crypto::MFiSAP => panic!("unsupported encryption: MFiSAP"),
-        }
+        sdp.push_str(crypto.sdp().as_str());
 
         // AppleTV expects now the timing port ot be opened BEFORE the setup message
         let rtp_time = UdpSocket::bind((local_addr, 0))?;
@@ -276,7 +224,7 @@ impl RaopClient {
         };
 
         // RTSP ANNOUNCE
-        if auth && crypto != Crypto::Clear {
+        if auth && !crypto.is_clear() {
             panic!("Not implemented");
             // let seed_sac: [u8; 16] = random();
             // base64_encode(&seed.sac, 16, &sac);
@@ -395,8 +343,6 @@ impl RaopClient {
 
             latency_frames: latency_frames_mutex,
             volume: Arc::new(Mutex::new(volume)),
-
-            aes: Arc::new(Mutex::new(AesContext { ctx, iv, nv, key })),
 
             time_running: time_running_mutex,
             time_thread: time_thread_mutex,
@@ -609,6 +555,7 @@ impl RaopClient {
         }
 
         let encoded = self.codec.encode_chunk(&sample);
+        let encrypted = self.crypto.encrypt(encoded)?;
 
         *playtime = TS2NTP(status.head_ts + self.latency() as u64, self.codec.sample_rate());
 
@@ -624,15 +571,9 @@ impl RaopClient {
             },
             timestamp: status.head_ts as u32,
             ssrc: (*self.ssrc.lock().unwrap() as u32),
-            data: encoded,
+            data: encrypted,
         };
         status.first_pkt = false;
-
-        // with newer airport express, don't use encryption (??)
-        if self.crypto != Crypto::Clear {
-            panic!("Not implemented");
-            // raopcl_encrypt(p, (u8_t*) packet + sizeof(rtp_audio_pkt_t), size);
-        }
 
         self._send_audio(&mut status, &packet)?;
 
