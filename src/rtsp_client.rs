@@ -1,8 +1,5 @@
 use crate::bindings::{ed25519_public_key_size, ed25519_secret_key_size, ed25519_private_key_size, ed25519_signature_size, ed25519_CreateKeyPair, curve25519_dh_CalculatePublicKey, curve25519_dh_CreateSharedKey, ed25519_SignMessage};
 
-use openssl_sys::{SHA512_CTX, SHA512_Init, SHA512_Update, SHA512_Final};
-
-use std::ffi::c_void;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::ptr;
@@ -10,6 +7,7 @@ use std::str::from_utf8;
 
 use hex::FromHex;
 use log::{error, info, debug};
+use openssl::sha::Sha512;
 use openssl::symm::{Cipher, Mode, Crypter};
 use rand::random;
 
@@ -83,27 +81,19 @@ impl RTSPClient {
         unsafe { curve25519_dh_CreateSharedKey(&mut shared_secret[0], &atv_pub[0], &mut verify_secret[0]); }
 
         // build AES-key & AES-iv from shared secret digest
-        let mut aes_key: [u8; 16] = unsafe { std::mem::uninitialized() };
-        unsafe {
-            let header = b"Pair-Verify-AES-Key";
-            let mut digest: SHA512_CTX = std::mem::uninitialized();
+        let aes_key = {
+            let mut hasher = Sha512::new();
+            hasher.update(b"Pair-Verify-AES-Key");
+            hasher.update(&shared_secret);
+            &hasher.finish()[0..16]
+        };
 
-            SHA512_Init(&mut digest);
-            SHA512_Update(&mut digest, (&header[0] as *const u8) as *const c_void, header.len());
-            SHA512_Update(&mut digest, (&shared_secret[0] as *const u8) as *const c_void, shared_secret.len());
-            SHA512_Final(&mut aes_key[0], &mut digest);
-        }
-
-        let mut aes_iv: [u8; 16] = unsafe { std::mem::uninitialized() };
-        unsafe {
-            let header = b"Pair-Verify-AES-IV";
-            let mut digest: SHA512_CTX = std::mem::uninitialized();
-
-            SHA512_Init(&mut digest);
-            SHA512_Update(&mut digest, (&header[0] as *const u8) as *const c_void, header.len());
-            SHA512_Update(&mut digest, (&shared_secret[0] as *const u8) as *const c_void, shared_secret.len());
-            SHA512_Final(&mut aes_iv[0], &mut digest);
-        }
+        let aes_iv = {
+            let mut hasher = Sha512::new();
+            hasher.update(b"Pair-Verify-AES-IV");
+            hasher.update(&shared_secret);
+            &hasher.finish()[0..16]
+        };
 
         // sign the verify_pub and atv_pub
         let mut signed_keys: [u8; ed25519_signature_size] = unsafe { std::mem::uninitialized() };
