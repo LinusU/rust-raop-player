@@ -25,6 +25,7 @@ use stderrlog;
 // Local dependencies
 mod codec;
 mod crypto;
+mod curve25519;
 mod ntp;
 mod raop_client;
 mod rtp;

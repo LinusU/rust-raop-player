@@ -1,8 +1,5 @@
-use crate::bindings::{ed25519_public_key_size, ed25519_secret_key_size, ed25519_private_key_size, ed25519_signature_size, ed25519_CreateKeyPair, curve25519_dh_CalculatePublicKey, curve25519_dh_CreateSharedKey, ed25519_SignMessage};
-
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::ptr;
 use std::str::from_utf8;
 
 use hex::FromHex;
@@ -10,6 +7,8 @@ use log::{error, info, debug};
 use openssl::sha::Sha512;
 use openssl::symm::{Cipher, Mode, Crypter};
 use rand::random;
+
+use crate::curve25519;
 
 enum Body<'a> {
     Text { content_type: &'a str, content: &'a str },
@@ -49,19 +48,16 @@ impl RTSPClient {
 
     pub fn pair_verify(&mut self, secret_hex: &str) -> Result<(), Box<std::error::Error>> {
         // retrieve authentication keys from secret
-        let secret = <[u8; ed25519_secret_key_size]>::from_hex(secret_hex)?;
-        let mut auth_pub = [0u8; ed25519_public_key_size];
-        let mut auth_priv = [0u8; ed25519_private_key_size];
-        unsafe { ed25519_CreateKeyPair(&mut auth_pub[0], &mut auth_priv[0], ptr::null_mut(), &secret[0]); }
+        let secret = <[u8; curve25519::SECRET_KEY_SIZE]>::from_hex(secret_hex)?;
+        let (auth_priv, auth_pub) = curve25519::create_key_pair(&secret);
         drop(secret);
 
         // create a verification public key
-        let mut verify_pub = [0u8; ed25519_public_key_size];
-        let mut verify_secret: [u8; ed25519_secret_key_size] = random();
-        unsafe { curve25519_dh_CalculatePublicKey(&mut verify_pub[0], &mut verify_secret[0]); }
+        let verify_secret: [u8; curve25519::SECRET_KEY_SIZE] = random();
+        let verify_pub = curve25519::calculate_public_key(&verify_secret);
 
         // POST the auth_pub and verify_pub concataned
-        let mut buf = Vec::with_capacity(4 + ed25519_public_key_size * 2);
+        let mut buf = Vec::with_capacity(4 + curve25519::PUBLIC_KEY_SIZE * 2);
         buf.extend(b"\x01\x00\x00\x00");
         buf.extend_from_slice(&verify_pub);
         buf.extend_from_slice(&auth_pub);
@@ -75,10 +71,9 @@ impl RTSPClient {
         let content = content.as_bytes();
 
         // get atv_pub and atv_data then create shared secret
-        let atv_pub = &content[0..ed25519_public_key_size];
-        let atv_data = &content[ed25519_public_key_size..];
-        let mut shared_secret = [0u8; ed25519_secret_key_size];
-        unsafe { curve25519_dh_CreateSharedKey(&mut shared_secret[0], &atv_pub[0], &mut verify_secret[0]); }
+        let atv_pub = &content[0..curve25519::PUBLIC_KEY_SIZE];
+        let atv_data = &content[curve25519::PUBLIC_KEY_SIZE..];
+        let shared_secret = curve25519::create_shared_key(&atv_pub, &verify_secret);
 
         // build AES-key & AES-iv from shared secret digest
         let aes_key = {
@@ -96,17 +91,16 @@ impl RTSPClient {
         };
 
         // sign the verify_pub and atv_pub
-        let mut signed_keys: [u8; ed25519_signature_size] = unsafe { std::mem::uninitialized() };
-        unsafe {
-            let mut message = Vec::with_capacity(ed25519_public_key_size * 2);
+        let signed_keys = {
+            let mut message = Vec::with_capacity(curve25519::PUBLIC_KEY_SIZE * 2);
             message.extend_from_slice(&verify_pub);
             message.extend_from_slice(&atv_pub);
-            ed25519_SignMessage(&mut signed_keys[0], &auth_priv[0], ptr::null(), &message[0], message.len());
-        }
+            curve25519::sign_message(&auth_priv, &message)
+        };
 
         // encrypt the signed result + atv_data, add 4 NULL bytes at the beginning
         let mut ctx = Crypter::new(Cipher::aes_128_ctr(), Mode::Encrypt, &aes_key, Some(&aes_iv))?;
-        let mut buf = [0u8; 4 + ed25519_signature_size];
+        let mut buf = [0u8; 4 + curve25519::SIGNATURE_SIZE];
 
         // Encrypt <atv_data>, discard result
         ctx.update(&atv_data, &mut buf)?;
@@ -126,11 +120,11 @@ impl RTSPClient {
     }
 
     pub fn auth_setup(&mut self) -> Result<(), Box<std::error::Error>> {
-        let mut pub_key = [0u8; ed25519_public_key_size];
-        let mut secret: [u8; ed25519_secret_key_size] = random();
-        unsafe { curve25519_dh_CalculatePublicKey(&mut pub_key[0], &mut secret[0]); }
+        let secret: [u8; curve25519::SECRET_KEY_SIZE] = random();
+        let pub_key = curve25519::calculate_public_key(&secret);
+        drop(secret);
 
-        let mut buf = Vec::with_capacity(1 + ed25519_public_key_size);
+        let mut buf = Vec::with_capacity(1 + curve25519::PUBLIC_KEY_SIZE);
         buf.push(0x01);
         buf.extend_from_slice(&pub_key);
 
