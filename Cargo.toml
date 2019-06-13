@@ -4,8 +4,6 @@ version = "0.0.0"
 authors = ["Linus Unnebäck <linus@folkdatorn.se>"]
 edition = "2018"
 
-build = "build.rs"
-
 [dependencies]
 alac-encoder = "^0.1.1"
 base64 = "^0.10.1"

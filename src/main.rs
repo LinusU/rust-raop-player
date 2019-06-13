@@ -1,9 +1,5 @@
 // FIXME: eventually remove these
-#![allow(non_snake_case, non_camel_case_types, non_upper_case_globals, dead_code)]
-
-// Link in the C part of the program
-#[link(name="raop", kind="static")]
-mod bindings;
+#![allow(non_snake_case, dead_code)]
 
 // Docopt
 #[macro_use]
