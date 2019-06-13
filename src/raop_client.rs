@@ -526,6 +526,10 @@ impl RaopClient {
         return Ok(accept);
     }
 
+    pub fn send_keepalive(&mut self) -> Result<(), Box<std::error::Error>> {
+        (*self.rtsp_client.lock().unwrap()).options(vec![])
+    }
+
     pub fn send_chunk(&mut self, sample: &[u8], playtime: &mut u64) -> Result<(), Box<std::error::Error>> {
         let now = NtpTime::now();
 

@@ -104,7 +104,8 @@ fn main() -> Result<(), Box<std::error::Error>> {
 
     let mut buf = [0; (MAX_SAMPLES_PER_CHUNK as usize) * 4];
 
-    let mut last = NtpTime::ZERO;
+    let mut last_keepalive = NtpTime::ZERO;
+    let mut last_status_log = NtpTime::ZERO;
     let mut frames: u64 = 0;
     let mut playtime: u64 = 0;
 
@@ -119,14 +120,21 @@ fn main() -> Result<(), Box<std::error::Error>> {
     loop {
         let now = NtpTime::now();
 
-        if (now - last) > Duration::from_secs(1) {
-            last = now;
+        if (now - last_status_log) > Duration::from_secs(1) {
+            last_status_log = now;
 
             if frames > 0 && frames > raopcl.latency().into() {
                 info!("at {} ({} ms after start), played {} ms",
                     now, (now - start).as_millis(),
                     TS2MS((frames as u32) - raopcl.latency(), raopcl.sample_rate()));
             }
+        }
+
+        if (now - last_keepalive) > Duration::from_secs(30) {
+            last_keepalive = now;
+
+            info!("sending keepalive packet");
+            raopcl.send_keepalive()?;
         }
 
         if *status.lock().unwrap() == Status::Playing && raopcl.accept_frames()? {

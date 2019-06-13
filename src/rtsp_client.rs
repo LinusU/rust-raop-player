@@ -44,7 +44,10 @@ impl RTSPClient {
 
     // bool rtspcl_is_connected(struct rtspcl_s *p);
     // bool rtspcl_is_sane(struct rtspcl_s *p);
-    // bool rtspcl_options(struct rtspcl_s *p, key_data_t *rkd);
+
+    pub fn options(&mut self, headers: Vec<(&str, &str)>) -> Result<(), Box<std::error::Error>> {
+        self.exec_request("OPTIONS", Body::None, headers, Some("*")).map(|_| ())
+    }
 
     pub fn pair_verify(&mut self, secret_hex: &str) -> Result<(), Box<std::error::Error>> {
         // retrieve authentication keys from secret
