@@ -7,15 +7,17 @@ extern crate serde_derive;
 use docopt::Docopt;
 
 // Standard dependencies
+use std::ffi::OsStr;
 use std::fs::File;
-use std::io;
+use std::io::{self, Read};
 use std::net::Ipv4Addr;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 // General dependencies
 use ctrlc;
-use log::info;
+use log::{error, info};
 use stderrlog;
 
 // Local dependencies
@@ -42,6 +44,7 @@ Usage:
 
 Options:
     -a            Send ALAC compressed audio
+    -c ARTWORK    Send the specified file as cover artwork
     -d LEVEL      Debug level (0 = silent, 5 = trace) [default: 2]
     -e            Encrypt AirPlay stream using RSA
     -h, --help    Print this help and exit
@@ -55,6 +58,7 @@ struct Args {
     arg_server_ip: Ipv4Addr,
     arg_filename: String,
     flag_a: bool,
+    flag_c: Option<String>,
     flag_d: usize,
     flag_e: bool,
     flag_l: u32,
@@ -106,6 +110,25 @@ fn main() -> Result<(), Box<std::error::Error>> {
     ]);
 
     raopcl.set_meta_data(meta_data)?;
+
+    if let Some(artwork) = args.flag_c {
+        match Path::new(&artwork).extension().and_then(OsStr::to_str) {
+            None => { error!("Failed to get file extension of cover artwork"); },
+            Some(ext) => {
+                if ext != "png" && ext != "jpg" {
+                    error!("Failed to get file extension of cover artwork");
+                } else {
+                    let mut file = File::open(&artwork)?;
+                    let mut data = Vec::new();
+                    file.read_to_end(&mut data)?;
+
+                    let content_type = if ext == "png" { "image/png" } else { "image/jpeg" };
+                    raopcl.set_artwork(content_type, &data)?;
+                }
+
+            },
+        }
+    }
 
     let start = NtpTime::now();
     let status = Arc::new(Mutex::new(Status::Playing));

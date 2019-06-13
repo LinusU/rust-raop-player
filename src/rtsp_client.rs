@@ -181,6 +181,13 @@ impl RTSPClient {
         self.exec_request("SET_PARAMETER", body, vec![("RTP-Info", &rtptime)], None).map(|_| ())
     }
 
+    pub fn set_artwork(&mut self, timestamp: u64, content_type: &str, data: &[u8]) -> Result<(), Box<std::error::Error>> {
+        let rtptime = format!("rtptime={}", timestamp);
+        let body = Body::Blob { content_type, content: data };
+
+        self.exec_request("SET_PARAMETER", body, vec![("RTP-Info", &rtptime)], None).map(|_| ())
+    }
+
     pub fn flush(&mut self, seq_number: u16, timestamp: u64) -> Result<(), Box<std::error::Error>> {
         let info = format!("seq={};rtptime={}", seq_number, timestamp);
         self.exec_request("FLUSH", Body::None, vec!(("RTP-Info", &info)), None).map(|_| ())

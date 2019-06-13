@@ -625,6 +625,16 @@ impl RaopClient {
         (*self.rtsp_client.lock().unwrap()).set_meta_data(ts, meta_data)
     }
 
+    pub fn set_artwork(&self, content_type: &str, data: &[u8]) -> Result<(), Box<std::error::Error>> {
+        // if !self.meta_data_capabilities.artwork {
+        //     warn!("Was asked to set cover artwork, but streaming target does not support that");
+        //     return Ok(());
+        // }
+
+        let ts = (*self.status.lock().unwrap()).head_ts;
+        (*self.rtsp_client.lock().unwrap()).set_artwork(ts, content_type, data)
+    }
+
     fn _send_audio(&self, status: &mut Status, packet: &RtpAudioPacket) -> Result<bool, Box<std::error::Error>> {
         /*
         Do not send if audio port closed or we are not yet in streaming state. We
