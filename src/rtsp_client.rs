@@ -9,6 +9,8 @@ use openssl::symm::{Cipher, Mode, Crypter};
 use rand::random;
 
 use crate::curve25519;
+use crate::meta_data::MetaDataItem;
+use crate::serialization::Serializable;
 
 enum Body<'a> {
     Text { content_type: &'a str, content: &'a str },
@@ -170,6 +172,13 @@ impl RTSPClient {
 
     pub fn set_parameter(&mut self, param: &str) -> Result<(), Box<std::error::Error>> {
         self.exec_request("SET_PARAMETER", Body::Text { content_type: "text/parameters", content: param }, vec!(), None).map(|_| ())
+    }
+
+    pub fn set_meta_data(&mut self, timestamp: u64, meta_data: MetaDataItem) -> Result<(), Box<std::error::Error>> {
+        let rtptime = format!("rtptime={}", timestamp);
+        let body = Body::Blob { content_type: "application/x-dmap-tagged", content: &meta_data.as_bytes() };
+
+        self.exec_request("SET_PARAMETER", body, vec![("RTP-Info", &rtptime)], None).map(|_| ())
     }
 
     pub fn flush(&mut self, seq_number: u16, timestamp: u64) -> Result<(), Box<std::error::Error>> {

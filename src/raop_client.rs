@@ -1,5 +1,6 @@
 use crate::codec::Codec;
 use crate::crypto::Crypto;
+use crate::meta_data::MetaDataItem;
 use crate::ntp::NtpTime;
 use crate::rtsp_client::RTSPClient;
 use crate::rtp::{RtpHeader, RtpAudioPacket, RtpAudioRetransmissionPacket, RtpLostPacket, RtpSyncPacket, RtpTimePacket};
@@ -617,6 +618,11 @@ impl RaopClient {
         if (vol < -30.0 || vol > 0.0) && vol != -144.0 { panic!("Invalid volume"); }
         *self.volume.lock().unwrap() = vol;
         return self._set_volume();
+    }
+
+    pub fn set_meta_data(&self, meta_data: MetaDataItem) -> Result<(), Box<std::error::Error>> {
+        let ts = (*self.status.lock().unwrap()).head_ts;
+        (*self.rtsp_client.lock().unwrap()).set_meta_data(ts, meta_data)
     }
 
     fn _send_audio(&self, status: &mut Status, packet: &RtpAudioPacket) -> Result<bool, Box<std::error::Error>> {

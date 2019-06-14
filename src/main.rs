@@ -22,6 +22,7 @@ use stderrlog;
 mod codec;
 mod crypto;
 mod curve25519;
+mod meta_data;
 mod ntp;
 mod raop_client;
 mod rtp;
@@ -30,6 +31,7 @@ mod serialization;
 
 use crate::codec::Codec;
 use crate::crypto::Crypto;
+use crate::meta_data::MetaDataItem;
 use crate::ntp::NtpTime;
 use crate::raop_client::{RaopClient, MAX_SAMPLES_PER_CHUNK};
 
@@ -98,6 +100,12 @@ fn main() -> Result<(), Box<std::error::Error>> {
     let latency = raopcl.latency();
 
     info!("connected to {} on port {}, player latency is {} ms", args.arg_server_ip, args.flag_p, TS2MS(latency, raopcl.sample_rate()));
+
+    let meta_data = MetaDataItem::listing_item(vec![
+        MetaDataItem::item_kind(2),
+    ]);
+
+    raopcl.set_meta_data(meta_data)?;
 
     let start = NtpTime::now();
     let status = Arc::new(Mutex::new(Status::Playing));
