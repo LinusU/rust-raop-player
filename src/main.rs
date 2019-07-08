@@ -28,6 +28,7 @@ mod raop_client;
 mod rtp;
 mod rtsp_client;
 mod serialization;
+mod tokio_rtsp;
 
 use crate::codec::Codec;
 use crate::crypto::Crypto;

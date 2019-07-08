@@ -1,25 +1,22 @@
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
-use std::str::from_utf8;
+use std::net::ToSocketAddrs;
 
 use hex::FromHex;
-use log::{error, info, debug};
+use log::{error, debug};
 use openssl::sha::Sha512;
 use openssl::symm::{Cipher, Mode, Crypter};
 use rand::random;
+use tokio::codec::Framed;
+use tokio::net::TcpStream;
+use tokio::reactor::Handle;
+use tokio::prelude::*;
 
 use crate::curve25519;
 use crate::meta_data::MetaDataItem;
 use crate::serialization::Serializable;
-
-enum Body<'a> {
-    Text { content_type: &'a str, content: &'a str },
-    Blob { content_type: &'a str, content: &'a [u8] },
-    None,
-}
+use crate::tokio_rtsp::{Body, RtspCodec};
 
 pub struct RTSPClient {
-    socket: BufReader<TcpStream>,
+    socket: Option<Framed<TcpStream, RtspCodec>>,
     url: String,
     cseq: u64,
     headers: Vec<(String, String)>,
@@ -29,11 +26,15 @@ pub struct RTSPClient {
 
 impl RTSPClient {
     pub fn connect<A: ToSocketAddrs>(addr: A, sid: &str, user_agent: &str, headers: &[(&str, &str)]) -> Result<RTSPClient, Box<std::error::Error>> {
-        let socket = TcpStream::connect(addr)?;
+        // FIXME: Connect async
+        let socket = std::net::TcpStream::connect(addr)?;
+        let socket = TcpStream::from_std(socket, &Handle::default())?;
         let peer_addr = socket.peer_addr()?;
 
+        let codec = RtspCodec::new(user_agent);
+
         Ok(RTSPClient {
-            socket: BufReader::new(socket),
+            socket: Some(Framed::new(socket, codec)),
             url: format!("rtsp://{}/{}", peer_addr.ip(), sid),
             cseq: 0,
             headers: headers.iter().map(|header| (header.0.to_owned(), header.1.to_owned())).collect(),
@@ -47,7 +48,7 @@ impl RTSPClient {
     // bool rtspcl_is_connected(struct rtspcl_s *p);
     // bool rtspcl_is_sane(struct rtspcl_s *p);
 
-    pub fn options(&mut self, headers: Vec<(&str, &str)>) -> Result<(), Box<std::error::Error>> {
+    pub fn options(&mut self, headers: Vec<(String, String)>) -> Result<(), Box<std::error::Error>> {
         self.exec_request("OPTIONS", Body::None, headers, Some("*")).map(|_| ())
     }
 
@@ -67,10 +68,8 @@ impl RTSPClient {
         buf.extend_from_slice(&verify_pub);
         buf.extend_from_slice(&auth_pub);
 
-        let (_, content) = self.exec_request("POST", Body::Blob { content_type: "application/octet-stream", content: &buf }, vec!(), Some("/pair-verify"))
+        let (_, content) = self.exec_request("POST", Body::Blob { content_type: "application/octet-stream".to_owned(), content: buf }, vec!(), Some("/pair-verify"))
             .map_err(|err| { error!("AppleTV verify step 1 failed (pair again)"); err })?;
-
-        drop(buf);
 
         // FIXME: flag to self.exec_request should make it return binary response
         let content = content.as_bytes();
@@ -105,7 +104,7 @@ impl RTSPClient {
 
         // encrypt the signed result + atv_data, add 4 NULL bytes at the beginning
         let mut ctx = Crypter::new(Cipher::aes_128_ctr(), Mode::Encrypt, &aes_key, Some(&aes_iv))?;
-        let mut buf = [0u8; 4 + curve25519::SIGNATURE_SIZE];
+        let mut buf = vec![0u8; 4 + curve25519::SIGNATURE_SIZE];
 
         // Encrypt <atv_data>, discard result
         ctx.update(&atv_data, &mut buf)?;
@@ -119,7 +118,7 @@ impl RTSPClient {
         buf[3] = 0;
 
         // ...and send this in the body of an HTTP POST request
-        self.exec_request("POST", Body::Blob { content_type: "application/octet-stream", content: &buf }, vec!(), Some("/pair-verify"))
+        self.exec_request("POST", Body::Blob { content_type: "application/octet-stream".to_owned(), content: buf }, vec!(), Some("/pair-verify"))
             .map_err(|err| { error!("AppleTV verify step 2 failed (pair again)"); err })
             .map(|_| ())
     }
@@ -133,18 +132,18 @@ impl RTSPClient {
         buf.push(0x01);
         buf.extend_from_slice(&pub_key);
 
-        self.exec_request("POST", Body::Blob { content_type: "application/octet-stream", content: &buf }, vec!(), Some("/auth-setup"))
+        self.exec_request("POST", Body::Blob { content_type: "application/octet-stream".to_owned(), content: buf }, vec!(), Some("/auth-setup"))
             .map_err(|err| { error!("auth-setup failed"); err })
             .map(|_| ())
     }
 
     pub fn announce_sdp(&mut self, sdp: &str) -> Result<(), Box<std::error::Error>> {
-        self.exec_request("ANNOUNCE", Body::Text { content_type: "application/sdp", content: sdp }, vec!(), None).map(|_| ())
+        self.exec_request("ANNOUNCE", Body::Text { content_type: "application/sdp".to_owned(), content: sdp.to_owned() }, vec!(), None).map(|_| ())
     }
 
     pub fn setup(&mut self, control_port: u16, timing_port: u16) -> Result<Vec<(String, String)>, Box<std::error::Error>> {
         let transport = format!("RTP/AVP/UDP;unicast;interleaved=0-1;mode=record;control_port={};timing_port={}", control_port, timing_port);
-        let (headers, _) = self.exec_request("SETUP", Body::None, vec!(("Transport", &transport)), None)?;
+        let (headers, _) = self.exec_request("SETUP", Body::None, vec!(("Transport".to_owned(), transport)), None)?;
         let session = headers.iter().find(|header| header.0.to_lowercase() == "session").map(|header| header.1.as_str());
 
         if let Some(session) = session {
@@ -165,25 +164,25 @@ impl RTSPClient {
         }
 
         let info = format!("seq={};rtptime={}", start_seq, start_ts);
-        let headers = vec!(("Range", "npt=0-"), ("RTP-Info", &info));
+        let headers = vec!(("Range".to_owned(), "npt=0-".to_owned()), ("RTP-Info".to_owned(), info));
 
         self.exec_request("RECORD", Body::None, headers, None).map(|result| result.0)
     }
 
     pub fn set_parameter(&mut self, param: &str) -> Result<(), Box<std::error::Error>> {
-        self.exec_request("SET_PARAMETER", Body::Text { content_type: "text/parameters", content: param }, vec!(), None).map(|_| ())
+        self.exec_request("SET_PARAMETER", Body::Text { content_type: "text/parameters".to_owned(), content: param.to_owned() }, vec!(), None).map(|_| ())
     }
 
     pub fn set_meta_data(&mut self, timestamp: u64, meta_data: MetaDataItem) -> Result<(), Box<std::error::Error>> {
         let rtptime = format!("rtptime={}", timestamp);
-        let body = Body::Blob { content_type: "application/x-dmap-tagged", content: &meta_data.as_bytes() };
+        let body = Body::Blob { content_type: "application/x-dmap-tagged".to_owned(), content: meta_data.as_bytes() };
 
-        self.exec_request("SET_PARAMETER", body, vec![("RTP-Info", &rtptime)], None).map(|_| ())
+        self.exec_request("SET_PARAMETER", body, vec![("RTP-Info".to_owned(), rtptime)], None).map(|_| ())
     }
 
     pub fn flush(&mut self, seq_number: u16, timestamp: u64) -> Result<(), Box<std::error::Error>> {
         let info = format!("seq={};rtptime={}", seq_number, timestamp);
-        self.exec_request("FLUSH", Body::None, vec!(("RTP-Info", &info)), None).map(|_| ())
+        self.exec_request("FLUSH", Body::None, vec!(("RTP-Info".to_owned(), info)), None).map(|_| ())
     }
 
     // bool rtspcl_set_daap(struct rtspcl_s *p, u32_t timestamp, int count, va_list args);
@@ -198,127 +197,37 @@ impl RTSPClient {
     }
 
     pub fn local_ip(&self) -> Result<String, Box<std::error::Error>> {
-        Ok(self.socket.get_ref().local_addr()?.ip().to_string())
+        Ok(self.socket.as_ref().unwrap().get_ref().local_addr()?.ip().to_string())
     }
 
-    // static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type,
-    //                 char *content, int length, int get_response, key_data_t *hds,
-    //                 key_data_t *rkd, char **resp_content, int *resp_len, char* url)
-    fn exec_request(&mut self, cmd: &str, body: Body, headers: Vec<(&str, &str)>, url: Option<&str>) -> Result<(Vec<(String, String)>, String), Box<std::error::Error>> {
-        // char line[2048];
-        // char *req;
-        // char buf[128];
-        // const char delimiters[] = " ";
-        // char *token,*dp;
-        // int i,j, rval, len, clen;
-        // int timeout = 10000; // msec unit
-        // struct pollfd pfds;
-        // key_data_t lkd[MAX_KD], *pkd;
+    fn exec_request(&mut self, cmd: &str, body: Body, headers: Vec<(String, String)>, url: Option<&str>) -> Result<(Vec<(String, String)>, String), Box<std::error::Error>> {
+        let url = url.map(|url| url.to_owned()).unwrap_or_else(|| self.url.clone());
 
-        // FIXME: Wait for "Normal data may be written without blocking."
-        // pfds.fd = rtspcld->fd;
-        // pfds.events = POLLOUT;
-        // i = poll(&pfds, 1, 0);
-        // if (i == -1 || (pfds.revents & POLLERR) || (pfds.revents & POLLHUP)) return false;
+        let socket = self.socket.take().expect("Failed to aquire socket");
+        let headers = self.headers.iter().chain(headers.iter()).map(|header| (header.0.to_owned(), header.1.to_owned())).collect();
+        let future = socket.send(crate::tokio_rtsp::RtspRequest { cmd: cmd.to_owned(), url, session: self.session.clone(), headers, body }).map_err(|err| err.into());
 
-        let mut req = Vec::new();
+        return future
+            .and_then(|socket| {
+                // FIXME: Return the socket in case of an error
+                socket.into_future().map_err(|(err, _)| err.into())
+            })
+            .map(|(response, socket)| {
+                self.socket = Some(socket);
 
-        let url = url.unwrap_or_else(|| self.url.as_str());
+                let response = match response {
+                    None => panic!("Connection closed prematurely"),
+                    Some(response) => response,
+                };
 
-        write!(&mut req, "{} {} RTSP/1.0\r\n", cmd, url)?;
+                if response.status != 200 {
+                    panic!("request failed");
+                }
 
-        for (key, value) in &headers {
-            write!(&mut req, "{}: {}\r\n", key, value)?;
-        }
-
-        if let Body::Text { ref content_type, ref content } = body {
-            write!(&mut req, "Content-Type: {}\r\n", content_type)?;
-            write!(&mut req, "Content-Length: {}\r\n", content.len())?;
-        }
-
-        if let Body::Blob { ref content_type, ref content } = body {
-            write!(&mut req, "Content-Type: {}\r\n", content_type)?;
-            write!(&mut req, "Content-Length: {}\r\n", content.len())?;
-        }
-
-        self.cseq += 1;
-        write!(&mut req, "CSeq: {}\r\n", self.cseq)?;
-        write!(&mut req, "User-Agent: {}\r\n", self.user_agent)?;
-
-        for (key, value) in &self.headers {
-            write!(&mut req, "{}: {}\r\n", key, value)?;
-        }
-
-        if let Some(ref session) = self.session {
-            write!(&mut req, "Session: {}\r\n", session)?;
-        }
-
-        write!(&mut req, "\r\n")?;
-
-        if let Body::Text { content_type: _, ref content } = body {
-            write!(&mut req, "{}", content)?;
-        }
-
-        if let Body::Blob { content_type: _, ref content } = body {
-            req.extend_from_slice(content);
-        }
-
-        self.socket.get_ref().write_all(&req)?;
-
-        match body {
-            Body::Text { content_type: _, content: _ } => debug!("----> : write {}", from_utf8(&req).unwrap()),
-            Body::Blob { content_type: _, content: _ } => debug!("----> : send binary request"),
-            Body::None => debug!("----> : write {}", from_utf8(&req).unwrap()),
-        }
-
-        {
-            let mut line = String::new();
-            self.socket.read_line(&mut line)?;
-
-            let status = line.splitn(3, ' ').skip(1).next().unwrap();
-
-            if status != "200" {
-                error!("<------ : request failed, error {}", line);
-                panic!("request failed");
-            } else {
-                debug!("<------ : {}: request ok", status);
-            }
-        }
-
-        let mut response_headers: Vec<(String, String)> = vec!();
-        let mut response_content_length: usize = 0;
-
-        loop {
-            let mut line = String::new();
-            self.socket.read_line(&mut line)?;
-
-            if line.trim() == "" { break; }
-
-            debug!("<------ : {}", line);
-
-            let mut parts = line.splitn(2, ':').map(|part| part.trim());
-            let key = parts.next().unwrap().to_owned();
-            let value = parts.next().unwrap().to_owned();
-
-            if key.to_lowercase() == "content-length" {
-                response_content_length = value.parse().unwrap();
-            }
-
-            response_headers.push((key, value));
-        }
-
-        if response_content_length == 0 {
-            return Ok((response_headers, String::new()));
-        }
-
-        let mut data = vec![0u8; response_content_length];
-        self.socket.read_exact(&mut data)?;
-
-        let response_content = String::from_utf8(data)?;
-
-        info!("Body data {}, {}", response_content_length, response_content);
-
-        Ok((response_headers, response_content))
+                let body = String::from_utf8(response.body).unwrap();
+                return (response.headers, body);
+            })
+            .wait();
     }
 }
 
