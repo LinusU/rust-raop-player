@@ -48,11 +48,11 @@ impl RTSPClient {
     // bool rtspcl_is_connected(struct rtspcl_s *p);
     // bool rtspcl_is_sane(struct rtspcl_s *p);
 
-    pub fn options(&mut self, headers: Vec<(String, String)>) -> Result<(), Box<std::error::Error>> {
+    pub fn options(&mut self, headers: Vec<(String, String)>) -> impl Future<Item = (), Error = Box<std::error::Error>> {
         self.exec_request("OPTIONS", Body::None, headers, Some("*")).map(|_| ())
     }
 
-    pub fn pair_verify(&mut self, secret_hex: &str) -> Result<(), Box<std::error::Error>> {
+    pub fn pair_verify(&mut self, secret_hex: &str) -> impl Future<Item = (), Error = Box<std::error::Error>> {
         // retrieve authentication keys from secret
         let secret = <[u8; curve25519::SECRET_KEY_SIZE]>::from_hex(secret_hex)?;
         let (auth_priv, auth_pub) = curve25519::create_key_pair(&secret);
@@ -123,7 +123,7 @@ impl RTSPClient {
             .map(|_| ())
     }
 
-    pub fn auth_setup(&mut self) -> Result<(), Box<std::error::Error>> {
+    pub fn auth_setup(&mut self) -> impl Future<Item = (), Error = Box<std::error::Error>> {
         let secret: [u8; curve25519::SECRET_KEY_SIZE] = random();
         let pub_key = curve25519::calculate_public_key(&secret);
         drop(secret);
@@ -137,27 +137,29 @@ impl RTSPClient {
             .map(|_| ())
     }
 
-    pub fn announce_sdp(&mut self, sdp: &str) -> Result<(), Box<std::error::Error>> {
+    pub fn announce_sdp(&mut self, sdp: &str) -> impl Future<Item = (), Error = Box<std::error::Error>> {
         self.exec_request("ANNOUNCE", Body::Text { content_type: "application/sdp".to_owned(), content: sdp.to_owned() }, vec!(), None).map(|_| ())
     }
 
-    pub fn setup(&mut self, control_port: u16, timing_port: u16) -> Result<Vec<(String, String)>, Box<std::error::Error>> {
+    pub fn setup(&mut self, control_port: u16, timing_port: u16) -> impl Future<Item = Vec<(String, String)>, Error = Box<std::error::Error>> {
         let transport = format!("RTP/AVP/UDP;unicast;interleaved=0-1;mode=record;control_port={};timing_port={}", control_port, timing_port);
-        let (headers, _) = self.exec_request("SETUP", Body::None, vec!(("Transport".to_owned(), transport)), None)?;
-        let session = headers.iter().find(|header| header.0.to_lowercase() == "session").map(|header| header.1.as_str());
+        self.exec_request("SETUP", Body::None, vec!(("Transport".to_owned(), transport)), None)
+            .map(|(headers, _)| {
+                let session = headers.iter().find(|header| header.0.to_lowercase() == "session").map(|header| header.1.as_str());
 
-        if let Some(session) = session {
-            self.session = Some(session.to_owned());
-            debug!("<------- : session:{}", session);
-        } else {
-            error!("no session in response");
-            panic!("no session in response");
-        }
+                if let Some(session) = session {
+                    self.session = Some(session.to_owned());
+                    debug!("<------- : session:{}", session);
+                } else {
+                    error!("no session in response");
+                    panic!("no session in response");
+                }
 
-        Ok(headers)
+                headers
+            })
     }
 
-    pub fn record(&mut self, start_seq: u16, start_ts: u64) -> Result<Vec<(String, String)>, Box<std::error::Error>> {
+    pub fn record(&mut self, start_seq: u16, start_ts: u64) -> impl Future<Item = Vec<(String, String)>, Error = Box<std::error::Error>> {
         if self.session.is_none() {
             error!("no session in progress");
             panic!("no session in progress");
@@ -169,18 +171,18 @@ impl RTSPClient {
         self.exec_request("RECORD", Body::None, headers, None).map(|result| result.0)
     }
 
-    pub fn set_parameter(&mut self, param: &str) -> Result<(), Box<std::error::Error>> {
+    pub fn set_parameter(&mut self, param: &str) -> impl Future<Item = (), Error = Box<std::error::Error>> {
         self.exec_request("SET_PARAMETER", Body::Text { content_type: "text/parameters".to_owned(), content: param.to_owned() }, vec!(), None).map(|_| ())
     }
 
-    pub fn set_meta_data(&mut self, timestamp: u64, meta_data: MetaDataItem) -> Result<(), Box<std::error::Error>> {
+    pub fn set_meta_data(&mut self, timestamp: u64, meta_data: MetaDataItem) -> impl Future<Item = (), Error = Box<std::error::Error>> {
         let rtptime = format!("rtptime={}", timestamp);
         let body = Body::Blob { content_type: "application/x-dmap-tagged".to_owned(), content: meta_data.as_bytes() };
 
         self.exec_request("SET_PARAMETER", body, vec![("RTP-Info".to_owned(), rtptime)], None).map(|_| ())
     }
 
-    pub fn flush(&mut self, seq_number: u16, timestamp: u64) -> Result<(), Box<std::error::Error>> {
+    pub fn flush(&mut self, seq_number: u16, timestamp: u64) -> impl Future<Item = (), Error = Box<std::error::Error>> {
         let info = format!("seq={};rtptime={}", seq_number, timestamp);
         self.exec_request("FLUSH", Body::None, vec!(("RTP-Info".to_owned(), info)), None).map(|_| ())
     }
@@ -200,7 +202,7 @@ impl RTSPClient {
         Ok(self.socket.as_ref().unwrap().get_ref().local_addr()?.ip().to_string())
     }
 
-    fn exec_request(&mut self, cmd: &str, body: Body, headers: Vec<(String, String)>, url: Option<&str>) -> Result<(Vec<(String, String)>, String), Box<std::error::Error>> {
+    fn exec_request(&mut self, cmd: &str, body: Body, headers: Vec<(String, String)>, url: Option<&str>) -> impl Future<Item = (Vec<(String, String)>, String), Error = Box<std::error::Error>> {
         let url = url.map(|url| url.to_owned()).unwrap_or_else(|| self.url.clone());
 
         let socket = self.socket.take().expect("Failed to aquire socket");
@@ -226,13 +228,12 @@ impl RTSPClient {
 
                 let body = String::from_utf8(response.body).unwrap();
                 return (response.headers, body);
-            })
-            .wait();
+            });
     }
 }
 
 impl Drop for RTSPClient {
     fn drop(&mut self) {
-        self.exec_request("TEARDOWN", Body::None, vec!(), None).unwrap();
+        self.exec_request("TEARDOWN", Body::None, vec!(), None).wait().unwrap();
     }
 }
