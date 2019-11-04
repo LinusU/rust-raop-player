@@ -22,6 +22,7 @@ use stderrlog;
 mod codec;
 mod crypto;
 mod curve25519;
+mod keepalive_controller;
 mod meta_data;
 mod ntp;
 mod raop_client;
@@ -118,7 +119,6 @@ async fn _main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut buf = [0; (MAX_SAMPLES_PER_CHUNK as usize) * 4];
 
-    let mut last_keepalive = NtpTime::ZERO;
     let mut last_status_log = NtpTime::ZERO;
     let mut frames: u64 = 0;
     let mut playtime: u64 = 0;
@@ -142,13 +142,6 @@ async fn _main() -> Result<(), Box<dyn std::error::Error>> {
                     now, (now - start).as_millis(),
                     TS2MS((frames as u32) - raopcl.latency().await, raopcl.sample_rate()));
             }
-        }
-
-        if (now - last_keepalive) > Duration::from_secs(30) {
-            last_keepalive = now;
-
-            info!("sending keepalive packet");
-            raopcl.send_keepalive().await?;
         }
 
         if *status.lock().unwrap() == Status::Playing && raopcl.accept_frames().await? {

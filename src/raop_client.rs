@@ -1,9 +1,10 @@
 use crate::codec::Codec;
 use crate::crypto::Crypto;
+use crate::keepalive_controller::KeepaliveController;
 use crate::meta_data::MetaDataItem;
 use crate::ntp::NtpTime;
-use crate::rtsp_client::RTSPClient;
 use crate::rtp::{RtpHeader, RtpAudioPacket};
+use crate::rtsp_client::RTSPClient;
 use crate::serialization::{Serializable};
 use crate::sync_controller::SyncController;
 use crate::timing_controller::TimingController;
@@ -126,6 +127,7 @@ pub struct RaopClient {
     et: Option<String>,
 
     // Mutable properties
+    keepalive_controller: KeepaliveController,
     rtp_audio: Arc<Mutex<UdpSocket>>,
     sync_controller: SyncController,
     timing_controller: TimingController,
@@ -304,6 +306,9 @@ impl RaopClient {
             if status.state == RaopState::Down { status.state = RaopState::Flushed; }
         }
 
+        let rtsp_client_mutex = Arc::new(Mutex::new(rtsp_client));
+        let keepalive_controller = KeepaliveController::start(Arc::clone(&rtsp_client_mutex));
+
         let client = RaopClient {
             // Immutable properties
             remote_addr,
@@ -317,9 +322,10 @@ impl RaopClient {
             et,
 
             // Mutable properties
+            keepalive_controller,
+            rtp_audio: rtp_audio_mutex,
             sync_controller,
             timing_controller,
-            rtp_audio: rtp_audio_mutex,
 
             sane: sane_mutex,
 
@@ -331,7 +337,7 @@ impl RaopClient {
             latency_frames: latency_frames_mutex,
             volume: Arc::new(Mutex::new(volume)),
 
-            rtsp_client: Arc::new(Mutex::new(rtsp_client)),
+            rtsp_client: rtsp_client_mutex,
         };
 
         if set_volume {
@@ -500,10 +506,6 @@ impl RaopClient {
         return Ok(accept);
     }
 
-    pub async fn send_keepalive(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        (*self.rtsp_client.lock().await).options(vec![]).await
-    }
-
     pub async fn send_chunk(&mut self, sample: &[u8], playtime: &mut u64) -> Result<(), Box<dyn std::error::Error>> {
         let now = NtpTime::now();
 
@@ -598,6 +600,7 @@ impl RaopClient {
         let mut status = self.status.lock().await;
         status.state = RaopState::Down;
 
+        self.keepalive_controller.stop();
         self.sync_controller.stop();
         self.timing_controller.stop();
 
