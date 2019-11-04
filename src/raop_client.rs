@@ -10,7 +10,8 @@ use crate::sync_controller::SyncController;
 use crate::timing_controller::TimingController;
 
 use std::net::{Ipv4Addr, IpAddr};
-use std::sync::{Arc};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use rand::random;
 use log::{error, info, debug, trace};
@@ -139,7 +140,7 @@ pub struct RaopClient {
 
     status: Arc<Mutex<Status>>,
 
-    latency_frames: Arc<Mutex<u32>>,
+    latency_frames: Arc<AtomicU32>,
     volume: Arc<Mutex<f32>>,
 
     rtsp_client: Arc<Mutex<RTSPClient>>,
@@ -288,13 +289,13 @@ impl RaopClient {
         }
 
         let status_mutex = Arc::new(Mutex::new(status));
-        let latency_frames_mutex = Arc::new(Mutex::new(latency_frames));
+        let latency_frames = Arc::new(AtomicU32::new(latency_frames));
 
         let sync_controller = {
             let status_ref = Arc::clone(&status_mutex);
             let sane_ref = Arc::clone(&sane_mutex);
             let retransmit_ref = Arc::clone(&retransmit_mutex);
-            let latency_frames_ref = Arc::clone(&latency_frames_mutex);
+            let latency_frames_ref = Arc::clone(&latency_frames);
             let sample_rate = codec.sample_rate();
 
             SyncController::start(rtp_ctrl, status_ref, sane_ref, retransmit_ref, latency_frames_ref, sample_rate)
@@ -334,7 +335,7 @@ impl RaopClient {
 
             status: status_mutex,
 
-            latency_frames: latency_frames_mutex,
+            latency_frames,
             volume: Arc::new(Mutex::new(volume)),
 
             rtsp_client: rtsp_client_mutex,
@@ -354,9 +355,9 @@ impl RaopClient {
         VOLUME_MIN + ((VOLUME_MAX - VOLUME_MIN) * (vol as f32)) / 100.0
     }
 
-    pub async fn latency(&self) -> u32 {
+    pub fn latency(&self) -> u32 {
         // Why do AirPlay devices use required latency + 11025?
-        *self.latency_frames.lock().await + LATENCY_MIN
+        self.latency_frames.load(Ordering::Relaxed) + LATENCY_MIN
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -368,7 +369,7 @@ impl RaopClient {
         trace!("[is_playing] - aquiring status");
         let status = self.status.lock().await;
         trace!("[is_playing] - got status");
-        let return_ = status.pause_ts > 0 || now_ts < status.head_ts + (self.latency().await as u64);
+        let return_ = status.pause_ts > 0 || now_ts < status.head_ts + (self.latency() as u64);
         trace!("[is_playing] - dropping status");
         return return_;
     }
@@ -397,7 +398,7 @@ impl RaopClient {
             now_ts = now.into_timestamp(self.codec.sample_rate());
 
             // Not flushed yet, but we have time to wait, so pretend we are full
-            if status.state != RaopState::Flushed && (!status.start_ts > 0 || status.start_ts > now_ts + self.latency().await as u64) {
+            if status.state != RaopState::Flushed && (!status.start_ts > 0 || status.start_ts > now_ts + self.latency() as u64) {
                 return Ok(false);
             }
 
@@ -415,31 +416,25 @@ impl RaopClient {
                 status.first_ts = status.head_ts;
 
                 if first_pkt {
-                    trace!("[accept_frames] - aquiring latency_frames");
-                    let latency_frames = self.latency_frames.lock().await;
-                    trace!("[accept_frames] - got latency_frames");
-                    self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), *latency_frames, true).await?;
-                    trace!("[accept_frames] - dropping latency_frames");
+                    let latency_frames = self.latency_frames.load(Ordering::Relaxed);
+                    self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), latency_frames, true).await?;
                 }
 
                 info!("restarting w/o pause n:{}, hts:{}", now, status.head_ts);
             } else {
                 let mut n: u16;
                 let mut i: u16;
-                let chunks = (self.latency().await / self.codec.chunk_length() as u32) as u16;
+                let chunks = (self.latency() / self.codec.chunk_length() as u32) as u16;
 
                 // if un-pausing w/o start_time, can anticipate as we have buffer
-                status.first_ts = if status.start_ts > 0 { status.start_ts } else { now_ts - self.latency().await as u64 };
+                status.first_ts = if status.start_ts > 0 { status.start_ts } else { now_ts - self.latency() as u64 };
 
                 // last head_ts shall be first + raopcl_latency - chunk_length
                 status.head_ts = status.first_ts - self.codec.chunk_length() as u64;
 
                 if first_pkt {
-                    trace!("[accept_frames] - aquiring latency_frames");
-                    let latency_frames = self.latency_frames.lock().await;
-                    trace!("[accept_frames] - got latency_frames");
-                    self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), *latency_frames, true).await?;
-                    trace!("[accept_frames] - dropping latency_frames");
+                    let latency_frames = self.latency_frames.load(Ordering::Relaxed);
+                    self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), latency_frames, true).await?;
                 }
 
                 info!("restarting w/ pause n:{}, hts:{} (re-send: {})", now, status.head_ts, chunks);
@@ -523,17 +518,14 @@ impl RaopClient {
             info!("begining to stream (LATE) hts:{} n:{}", status.head_ts, now);
             status.state = RaopState::Streaming;
 
-            trace!("[send_chunk] - aquiring latency_frames");
-            let latency_frames = self.latency_frames.lock().await;
-            trace!("[send_chunk] - got latency_frames");
-            self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), *latency_frames, true).await?;
-            trace!("[send_chunk] - dropping latency_frames");
+            let latency_frames = self.latency_frames.load(Ordering::Relaxed);
+            self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), latency_frames, true).await?;
         }
 
         let encoded = self.codec.encode_chunk(&sample);
         let encrypted = self.crypto.encrypt(encoded)?;
 
-        *playtime = TS2NTP(status.head_ts + self.latency().await as u64, self.codec.sample_rate());
+        *playtime = TS2NTP(status.head_ts + self.latency() as u64, self.codec.sample_rate());
 
         trace!("sending audio ts:{} (pt:{}.{} now:{}) ", status.head_ts, SEC(*playtime), FRAC(*playtime), NtpTime::now());
 

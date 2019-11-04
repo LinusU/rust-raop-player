@@ -104,7 +104,7 @@ async fn _main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut raopcl = RaopClient::connect(host, codec, args.flag_l, crypto, false, None, None, None, volume, args.arg_server_ip, args.flag_p, true).await?;
 
-    let latency = raopcl.latency().await;
+    let latency = raopcl.latency();
 
     info!("connected to {} on port {}, player latency is {} ms", args.arg_server_ip, args.flag_p, TS2MS(latency, raopcl.sample_rate()));
 
@@ -137,10 +137,10 @@ async fn _main() -> Result<(), Box<dyn std::error::Error>> {
         if (now - last_status_log) > Duration::from_secs(1) {
             last_status_log = now;
 
-            if frames > 0 && frames > raopcl.latency().await.into() {
+            if frames > 0 && frames > raopcl.latency().into() {
                 info!("at {} ({} ms after start), played {} ms",
                     now, (now - start).as_millis(),
-                    TS2MS((frames as u32) - raopcl.latency().await, raopcl.sample_rate()));
+                    TS2MS((frames as u32) - raopcl.latency(), raopcl.sample_rate()));
             }
         }
 
