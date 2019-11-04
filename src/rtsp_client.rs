@@ -1,5 +1,5 @@
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::io::Write;
+use std::net::ToSocketAddrs;
 use std::str::from_utf8;
 
 use hex::FromHex;
@@ -7,6 +7,10 @@ use log::{error, info, debug};
 use openssl::sha::Sha512;
 use openssl::symm::{Cipher, Mode, Crypter};
 use rand::random;
+use tokio_net::driver::Handle;
+use tokio::io::BufReader;
+use tokio::net::TcpStream;
+use tokio::prelude::*;
 
 use crate::curve25519;
 use crate::meta_data::MetaDataItem;
@@ -28,8 +32,10 @@ pub struct RTSPClient {
 }
 
 impl RTSPClient {
-    pub fn connect<A: ToSocketAddrs>(addr: A, sid: &str, user_agent: &str, headers: &[(&str, &str)]) -> Result<RTSPClient, Box<std::error::Error>> {
-        let socket = TcpStream::connect(addr)?;
+    pub fn connect<A: ToSocketAddrs>(addr: A, sid: &str, user_agent: &str, headers: &[(&str, &str)]) -> Result<RTSPClient, Box<dyn std::error::Error>> {
+        // FIXME: Connect async
+        let socket = std::net::TcpStream::connect(addr)?;
+        let socket = TcpStream::from_std(socket, &Handle::default())?;
         let peer_addr = socket.peer_addr()?;
 
         Ok(RTSPClient {
@@ -47,11 +53,11 @@ impl RTSPClient {
     // bool rtspcl_is_connected(struct rtspcl_s *p);
     // bool rtspcl_is_sane(struct rtspcl_s *p);
 
-    pub fn options(&mut self, headers: Vec<(&str, &str)>) -> Result<(), Box<std::error::Error>> {
-        self.exec_request("OPTIONS", Body::None, headers, Some("*")).map(|_| ())
+    pub async fn options(&mut self, headers: Vec<(&str, &str)>) -> Result<(), Box<dyn std::error::Error>> {
+        self.exec_request("OPTIONS", Body::None, headers, Some("*")).await.map(|_| ())
     }
 
-    pub fn pair_verify(&mut self, secret_hex: &str) -> Result<(), Box<std::error::Error>> {
+    pub async fn pair_verify(&mut self, secret_hex: &str) -> Result<(), Box<dyn std::error::Error>> {
         // retrieve authentication keys from secret
         let secret = <[u8; curve25519::SECRET_KEY_SIZE]>::from_hex(secret_hex)?;
         let (auth_priv, auth_pub) = curve25519::create_key_pair(&secret);
@@ -67,7 +73,7 @@ impl RTSPClient {
         buf.extend_from_slice(&verify_pub);
         buf.extend_from_slice(&auth_pub);
 
-        let (_, content) = self.exec_request("POST", Body::Blob { content_type: "application/octet-stream", content: &buf }, vec!(), Some("/pair-verify"))
+        let (_, content) = self.exec_request("POST", Body::Blob { content_type: "application/octet-stream", content: &buf }, vec!(), Some("/pair-verify")).await
             .map_err(|err| { error!("AppleTV verify step 1 failed (pair again)"); err })?;
 
         drop(buf);
@@ -119,12 +125,12 @@ impl RTSPClient {
         buf[3] = 0;
 
         // ...and send this in the body of an HTTP POST request
-        self.exec_request("POST", Body::Blob { content_type: "application/octet-stream", content: &buf }, vec!(), Some("/pair-verify"))
+        self.exec_request("POST", Body::Blob { content_type: "application/octet-stream", content: &buf }, vec!(), Some("/pair-verify")).await
             .map_err(|err| { error!("AppleTV verify step 2 failed (pair again)"); err })
             .map(|_| ())
     }
 
-    pub fn auth_setup(&mut self) -> Result<(), Box<std::error::Error>> {
+    pub async fn auth_setup(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let secret: [u8; curve25519::SECRET_KEY_SIZE] = random();
         let pub_key = curve25519::calculate_public_key(&secret);
         drop(secret);
@@ -133,18 +139,18 @@ impl RTSPClient {
         buf.push(0x01);
         buf.extend_from_slice(&pub_key);
 
-        self.exec_request("POST", Body::Blob { content_type: "application/octet-stream", content: &buf }, vec!(), Some("/auth-setup"))
+        self.exec_request("POST", Body::Blob { content_type: "application/octet-stream", content: &buf }, vec!(), Some("/auth-setup")).await
             .map_err(|err| { error!("auth-setup failed"); err })
             .map(|_| ())
     }
 
-    pub fn announce_sdp(&mut self, sdp: &str) -> Result<(), Box<std::error::Error>> {
-        self.exec_request("ANNOUNCE", Body::Text { content_type: "application/sdp", content: sdp }, vec!(), None).map(|_| ())
+    pub async fn announce_sdp(&mut self, sdp: &str) -> Result<(), Box<dyn std::error::Error>> {
+        self.exec_request("ANNOUNCE", Body::Text { content_type: "application/sdp", content: sdp }, vec!(), None).await.map(|_| ())
     }
 
-    pub fn setup(&mut self, control_port: u16, timing_port: u16) -> Result<Vec<(String, String)>, Box<std::error::Error>> {
+    pub async fn setup(&mut self, control_port: u16, timing_port: u16) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
         let transport = format!("RTP/AVP/UDP;unicast;interleaved=0-1;mode=record;control_port={};timing_port={}", control_port, timing_port);
-        let (headers, _) = self.exec_request("SETUP", Body::None, vec!(("Transport", &transport)), None)?;
+        let (headers, _) = self.exec_request("SETUP", Body::None, vec!(("Transport", &transport)), None).await?;
         let session = headers.iter().find(|header| header.0.to_lowercase() == "session").map(|header| header.1.as_str());
 
         if let Some(session) = session {
@@ -158,7 +164,7 @@ impl RTSPClient {
         Ok(headers)
     }
 
-    pub fn record(&mut self, start_seq: u16, start_ts: u64) -> Result<Vec<(String, String)>, Box<std::error::Error>> {
+    pub async fn record(&mut self, start_seq: u16, start_ts: u64) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
         if self.session.is_none() {
             error!("no session in progress");
             panic!("no session in progress");
@@ -167,23 +173,27 @@ impl RTSPClient {
         let info = format!("seq={};rtptime={}", start_seq, start_ts);
         let headers = vec!(("Range", "npt=0-"), ("RTP-Info", &info));
 
-        self.exec_request("RECORD", Body::None, headers, None).map(|result| result.0)
+        self.exec_request("RECORD", Body::None, headers, None).await.map(|result| result.0)
     }
 
-    pub fn set_parameter(&mut self, param: &str) -> Result<(), Box<std::error::Error>> {
-        self.exec_request("SET_PARAMETER", Body::Text { content_type: "text/parameters", content: param }, vec!(), None).map(|_| ())
+    pub async fn set_parameter(&mut self, param: &str) -> Result<(), Box<dyn std::error::Error>> {
+        self.exec_request("SET_PARAMETER", Body::Text { content_type: "text/parameters", content: param }, vec!(), None).await.map(|_| ())
     }
 
-    pub fn set_meta_data(&mut self, timestamp: u64, meta_data: MetaDataItem) -> Result<(), Box<std::error::Error>> {
+    pub async fn set_meta_data(&mut self, timestamp: u64, meta_data: MetaDataItem) -> Result<(), Box<dyn std::error::Error>> {
         let rtptime = format!("rtptime={}", timestamp);
         let body = Body::Blob { content_type: "application/x-dmap-tagged", content: &meta_data.as_bytes() };
 
-        self.exec_request("SET_PARAMETER", body, vec![("RTP-Info", &rtptime)], None).map(|_| ())
+        self.exec_request("SET_PARAMETER", body, vec![("RTP-Info", &rtptime)], None).await.map(|_| ())
     }
 
-    pub fn flush(&mut self, seq_number: u16, timestamp: u64) -> Result<(), Box<std::error::Error>> {
+    pub async fn flush(&mut self, seq_number: u16, timestamp: u64) -> Result<(), Box<dyn std::error::Error>> {
         let info = format!("seq={};rtptime={}", seq_number, timestamp);
-        self.exec_request("FLUSH", Body::None, vec!(("RTP-Info", &info)), None).map(|_| ())
+        self.exec_request("FLUSH", Body::None, vec!(("RTP-Info", &info)), None).await.map(|_| ())
+    }
+
+    pub async fn teardown(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.exec_request("TEARDOWN", Body::None, vec!(), None).await.map(|_| ())
     }
 
     // bool rtspcl_set_daap(struct rtspcl_s *p, u32_t timestamp, int count, va_list args);
@@ -197,30 +207,11 @@ impl RTSPClient {
         self.headers.retain(|header| header.0 != key);
     }
 
-    pub fn local_ip(&self) -> Result<String, Box<std::error::Error>> {
+    pub fn local_ip(&self) -> Result<String, Box<dyn std::error::Error>> {
         Ok(self.socket.get_ref().local_addr()?.ip().to_string())
     }
 
-    // static bool exec_request(struct rtspcl_s *rtspcld, char *cmd, char *content_type,
-    //                 char *content, int length, int get_response, key_data_t *hds,
-    //                 key_data_t *rkd, char **resp_content, int *resp_len, char* url)
-    fn exec_request(&mut self, cmd: &str, body: Body, headers: Vec<(&str, &str)>, url: Option<&str>) -> Result<(Vec<(String, String)>, String), Box<std::error::Error>> {
-        // char line[2048];
-        // char *req;
-        // char buf[128];
-        // const char delimiters[] = " ";
-        // char *token,*dp;
-        // int i,j, rval, len, clen;
-        // int timeout = 10000; // msec unit
-        // struct pollfd pfds;
-        // key_data_t lkd[MAX_KD], *pkd;
-
-        // FIXME: Wait for "Normal data may be written without blocking."
-        // pfds.fd = rtspcld->fd;
-        // pfds.events = POLLOUT;
-        // i = poll(&pfds, 1, 0);
-        // if (i == -1 || (pfds.revents & POLLERR) || (pfds.revents & POLLHUP)) return false;
-
+    async fn exec_request(&mut self, cmd: &str, body: Body<'_>, headers: Vec<(&str, &str)>, url: Option<&str>) -> Result<(Vec<(String, String)>, String), Box<dyn std::error::Error>> {
         let mut req = Vec::new();
 
         let url = url.unwrap_or_else(|| self.url.as_str());
@@ -263,7 +254,7 @@ impl RTSPClient {
             req.extend_from_slice(content);
         }
 
-        self.socket.get_ref().write_all(&req)?;
+        self.socket.get_mut().write_all(&req).await?;
 
         match body {
             Body::Text { content_type: _, content: _ } => debug!("----> : write {}", from_utf8(&req).unwrap()),
@@ -273,7 +264,7 @@ impl RTSPClient {
 
         {
             let mut line = String::new();
-            self.socket.read_line(&mut line)?;
+            self.socket.read_line(&mut line).await?;
 
             let status = line.splitn(3, ' ').skip(1).next().unwrap();
 
@@ -290,7 +281,7 @@ impl RTSPClient {
 
         loop {
             let mut line = String::new();
-            self.socket.read_line(&mut line)?;
+            self.socket.read_line(&mut line).await?;
 
             if line.trim() == "" { break; }
 
@@ -312,18 +303,12 @@ impl RTSPClient {
         }
 
         let mut data = vec![0u8; response_content_length];
-        self.socket.read_exact(&mut data)?;
+        self.socket.read_exact(&mut data).await?;
 
         let response_content = String::from_utf8(data)?;
 
         info!("Body data {}, {}", response_content_length, response_content);
 
         Ok((response_headers, response_content))
-    }
-}
-
-impl Drop for RTSPClient {
-    fn drop(&mut self) {
-        self.exec_request("TEARDOWN", Body::None, vec!(), None).unwrap();
     }
 }

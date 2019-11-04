@@ -19,7 +19,7 @@ impl Serializable for MetaDataValue {
         }
     }
 
-    fn serialize(&self, writer: &mut Write) -> io::Result<()> {
+    fn serialize(&self, writer: &mut dyn Write) -> io::Result<()> {
         writer.write_u32::<BE>((self.size() - 4) as u32)?;
 
         match self {
@@ -62,7 +62,7 @@ impl MetaDataItem {
 impl Serializable for MetaDataItem {
     fn size(&self) -> usize { 4 + self.value.size() }
 
-    fn serialize(&self, writer: &mut Write) -> io::Result<()> {
+    fn serialize(&self, writer: &mut dyn Write) -> io::Result<()> {
         writer.write_all(&self.code)?;
         self.value.serialize(writer)
     }

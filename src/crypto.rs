@@ -45,7 +45,7 @@ impl Crypto {
         }
     }
 
-    pub fn encrypt(&self, data: Vec<u8>) -> Result<Vec<u8>, Box<std::error::Error>> {
+    pub fn encrypt(&self, data: Vec<u8>) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         match self {
             Crypto::Clear() => Ok(data),
             Crypto::AES { key, iv } => {

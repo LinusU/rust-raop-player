@@ -77,7 +77,7 @@ impl Sub for NtpTime {
 impl Deserializable for NtpTime {
     const SIZE: usize = 8;
 
-    fn deserialize(reader: &mut Read) -> io::Result<NtpTime> {
+    fn deserialize(reader: &mut dyn Read) -> io::Result<NtpTime> {
         let seconds = reader.read_u32::<BE>()?;
         let fraction = reader.read_u32::<BE>()?;
 
@@ -90,7 +90,7 @@ impl Serializable for NtpTime {
         NtpTime::SIZE
     }
 
-    fn serialize(&self, writer: &mut Write) -> io::Result<()> {
+    fn serialize(&self, writer: &mut dyn Write) -> io::Result<()> {
         writer.write_u32::<BE>(self.seconds)?;
         writer.write_u32::<BE>(self.fraction)
     }

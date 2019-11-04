@@ -28,6 +28,8 @@ mod raop_client;
 mod rtp;
 mod rtsp_client;
 mod serialization;
+mod sync_controller;
+mod timing_controller;
 
 use crate::codec::Codec;
 use crate::crypto::Crypto;
@@ -82,12 +84,16 @@ fn open_file(name: String) -> Box<dyn io::Read> {
     }
 }
 
-fn main() -> Result<(), Box<std::error::Error>> {
+pub fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tokio::runtime::current_thread::Runtime::new()?.block_on(_main())
+}
+
+async fn _main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Args = Docopt::new(USAGE)
         .and_then(|d| d.deserialize())
         .unwrap_or_else(|e| e.exit());
 
-    stderrlog::new().verbosity(args.flag_d).timestamp(stderrlog::Timestamp::Microsecond).color(stderrlog::ColorChoice::Never).init().unwrap();
+    stderrlog::new().verbosity(args.flag_d).timestamp(stderrlog::Timestamp::Microsecond).color(stderrlog::ColorChoice::Never).init()?;
 
     let host = Ipv4Addr::UNSPECIFIED;
     let codec = Codec::new(args.flag_a, MAX_SAMPLES_PER_CHUNK, 44100, 16, 2);
@@ -95,9 +101,9 @@ fn main() -> Result<(), Box<std::error::Error>> {
     let volume = RaopClient::float_volume(args.flag_v);
     let mut infile = open_file(args.arg_filename);
 
-    let mut raopcl = RaopClient::connect(host, codec, args.flag_l, crypto, false, None, None, None, volume, args.arg_server_ip, args.flag_p, true).unwrap();
+    let mut raopcl = RaopClient::connect(host, codec, args.flag_l, crypto, false, None, None, None, volume, args.arg_server_ip, args.flag_p, true).await?;
 
-    let latency = raopcl.latency();
+    let latency = raopcl.latency().await;
 
     info!("connected to {} on port {}, player latency is {} ms", args.arg_server_ip, args.flag_p, TS2MS(latency, raopcl.sample_rate()));
 
@@ -105,7 +111,7 @@ fn main() -> Result<(), Box<std::error::Error>> {
         MetaDataItem::item_kind(2),
     ]);
 
-    raopcl.set_meta_data(meta_data)?;
+    raopcl.set_meta_data(meta_data).await?;
 
     let start = NtpTime::now();
     let status = Arc::new(Mutex::new(Status::Playing));
@@ -122,7 +128,7 @@ fn main() -> Result<(), Box<std::error::Error>> {
         ctrlc::set_handler(move || {
             info!("Recevied SIGINT, stopping playback");
             *status_handle.lock().unwrap() = Status::Stopped;
-        }).unwrap();
+        })?;
     }
 
     loop {
@@ -131,10 +137,10 @@ fn main() -> Result<(), Box<std::error::Error>> {
         if (now - last_status_log) > Duration::from_secs(1) {
             last_status_log = now;
 
-            if frames > 0 && frames > raopcl.latency().into() {
+            if frames > 0 && frames > raopcl.latency().await.into() {
                 info!("at {} ({} ms after start), played {} ms",
                     now, (now - start).as_millis(),
-                    TS2MS((frames as u32) - raopcl.latency(), raopcl.sample_rate()));
+                    TS2MS((frames as u32) - raopcl.latency().await, raopcl.sample_rate()));
             }
         }
 
@@ -142,23 +148,23 @@ fn main() -> Result<(), Box<std::error::Error>> {
             last_keepalive = now;
 
             info!("sending keepalive packet");
-            raopcl.send_keepalive()?;
+            raopcl.send_keepalive().await?;
         }
 
-        if *status.lock().unwrap() == Status::Playing && raopcl.accept_frames()? {
-            let n = infile.read(&mut buf).unwrap();
+        if *status.lock().unwrap() == Status::Playing && raopcl.accept_frames().await? {
+            let n = infile.read(&mut buf)?;
             if n == 0 { break }
-            raopcl.send_chunk(&buf[0..n], &mut playtime)?;
+            raopcl.send_chunk(&buf[0..n], &mut playtime).await?;
             frames += (n / 4) as u64;
         }
 
         if *status.lock().unwrap() == Status::Stopped {
-            raopcl.stop();
+            raopcl.stop().await;
             break
         }
 
-        if !raopcl.is_playing() { break }
+        if !raopcl.is_playing().await { break }
     }
 
-    Ok(())
+    raopcl.teardown().await
 }
