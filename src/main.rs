@@ -7,8 +7,7 @@ extern crate serde_derive;
 use docopt::Docopt;
 
 // Standard dependencies
-use std::fs::File;
-use std::io;
+use std::marker::Unpin;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -17,6 +16,8 @@ use std::time::Duration;
 use ctrlc;
 use log::info;
 use stderrlog;
+use tokio::fs::File;
+use tokio::prelude::*;
 
 // Local dependencies
 mod codec;
@@ -77,11 +78,11 @@ enum Status {
     Playing,
 }
 
-fn open_file(name: String) -> Box<dyn io::Read> {
+async fn open_file(name: String) -> Box<dyn AsyncRead + Unpin> {
     if name == "-" {
-        Box::new(io::stdin())
+        Box::new(tokio::io::stdin()) as Box<dyn AsyncRead + Unpin>
     } else {
-        Box::new(File::open(name).unwrap())
+        Box::new(File::open(name).await.unwrap()) as Box<dyn AsyncRead + Unpin>
     }
 }
 
@@ -100,7 +101,7 @@ async fn _main() -> Result<(), Box<dyn std::error::Error>> {
     let codec = Codec::new(args.flag_a, MAX_SAMPLES_PER_CHUNK, 44100, 16, 2);
     let crypto = Crypto::new(args.flag_e);
     let volume = RaopClient::float_volume(args.flag_v);
-    let mut infile = open_file(args.arg_filename);
+    let mut infile = open_file(args.arg_filename).await;
 
     let mut raopcl = RaopClient::connect(host, codec, args.flag_l, crypto, false, None, None, None, volume, args.arg_server_ip, args.flag_p, true).await?;
 
@@ -145,7 +146,7 @@ async fn _main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         if *status.lock().unwrap() == Status::Playing && raopcl.accept_frames().await? {
-            let n = infile.read(&mut buf)?;
+            let n = infile.read(&mut buf).await?;
             if n == 0 { break }
             raopcl.send_chunk(&buf[0..n], &mut playtime).await?;
             frames += (n / 4) as u64;
