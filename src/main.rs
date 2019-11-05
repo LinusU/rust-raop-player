@@ -10,10 +10,12 @@ use docopt::Docopt;
 use std::marker::Unpin;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 // General dependencies
 use ctrlc;
+use futures::future::{Abortable, AbortHandle};
 use log::info;
 use stderrlog;
 use tokio::fs::File;
@@ -78,6 +80,41 @@ enum Status {
     Playing,
 }
 
+struct StatusLogger {
+    abort_handle: AbortHandle,
+}
+
+impl StatusLogger {
+    fn start(start: NtpTime, frames: Arc<AtomicU64>, latency: Arc<AtomicU32>, sample_rate: u32) -> StatusLogger {
+        let (abort_handle, abort_registration) = AbortHandle::new_pair();
+        let future = StatusLogger::run(start, frames, latency, sample_rate);
+        let future = Abortable::new(future, abort_registration).map(|_| {});
+        tokio::runtime::current_thread::spawn(future);
+        StatusLogger { abort_handle }
+    }
+
+    fn stop(self) {
+        self.abort_handle.abort();
+    }
+
+    async fn run(start: NtpTime, frames: Arc<AtomicU64>, latency: Arc<AtomicU32>, sample_rate: u32) {
+        loop {
+            let now = NtpTime::now();
+
+            let frames = frames.load(Ordering::Relaxed);
+            let latency = latency.load(Ordering::Relaxed);
+
+            if frames > 0 && frames > latency as u64 {
+                info!("at {} ({} ms after start), played {} ms",
+                    now, (now - start).as_millis(),
+                    TS2MS((frames as u32) - latency, sample_rate));
+            }
+
+            tokio::timer::delay_for(Duration::from_secs(1)).await;
+        }
+    }
+}
+
 async fn open_file(name: String) -> Box<dyn AsyncRead + Unpin> {
     if name == "-" {
         Box::new(tokio::io::stdin()) as Box<dyn AsyncRead + Unpin>
@@ -120,8 +157,7 @@ async fn _main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut buf = [0; (MAX_SAMPLES_PER_CHUNK as usize) * 4];
 
-    let mut last_status_log = NtpTime::ZERO;
-    let mut frames: u64 = 0;
+    let frames = Arc::new(AtomicU64::new(0));
     let mut playtime: u64 = 0;
 
     {
@@ -132,24 +168,15 @@ async fn _main() -> Result<(), Box<dyn std::error::Error>> {
         })?;
     }
 
+    let status_logger = StatusLogger::start(start, Arc::clone(&frames), raopcl.latency_frames_handle(), raopcl.sample_rate());
+
     loop {
-        let now = NtpTime::now();
-
-        if (now - last_status_log) > Duration::from_secs(1) {
-            last_status_log = now;
-
-            if frames > 0 && frames > raopcl.latency().into() {
-                info!("at {} ({} ms after start), played {} ms",
-                    now, (now - start).as_millis(),
-                    TS2MS((frames as u32) - raopcl.latency(), raopcl.sample_rate()));
-            }
-        }
-
-        if *status.lock().unwrap() == Status::Playing && raopcl.accept_frames().await? {
+        if *status.lock().unwrap() == Status::Playing {
             let n = infile.read(&mut buf).await?;
             if n == 0 { break }
+            raopcl.accept_frames().await?;
             raopcl.send_chunk(&buf[0..n], &mut playtime).await?;
-            frames += (n / 4) as u64;
+            frames.fetch_add((n / 4) as u64, Ordering::Relaxed);
         }
 
         if *status.lock().unwrap() == Status::Stopped {
@@ -160,5 +187,6 @@ async fn _main() -> Result<(), Box<dyn std::error::Error>> {
         if !raopcl.is_playing().await { break }
     }
 
+    status_logger.stop();
     raopcl.teardown().await
 }

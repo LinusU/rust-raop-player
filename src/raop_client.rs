@@ -12,11 +12,13 @@ use crate::timing_controller::TimingController;
 use std::net::{Ipv4Addr, IpAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 
 use rand::random;
 use log::{error, info, debug, trace};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
+use tokio::time::delay_for;
 
 const VOLUME_MIN: f32 = -30.0;
 const VOLUME_MAX: f32 = 0.0;
@@ -360,6 +362,10 @@ impl RaopClient {
         self.latency_frames.load(Ordering::Relaxed) + LATENCY_MIN
     }
 
+    pub fn latency_frames_handle(&self) -> Arc<AtomicU32> {
+        Arc::clone(&self.latency_frames)
+    }
+
     pub fn sample_rate(&self) -> u32 {
         self.codec.sample_rate()
     }
@@ -383,7 +389,7 @@ impl RaopClient {
         trace!("[stop] - dropping status");
     }
 
-    pub async fn accept_frames(&self) -> Result<bool, Box<dyn std::error::Error>> {
+    pub async fn accept_frames(&self) -> Result<(), Box<dyn std::error::Error>> {
         let mut first_pkt = false;
         let mut now_ts: u64;
 
@@ -399,7 +405,7 @@ impl RaopClient {
 
             // Not flushed yet, but we have time to wait, so pretend we are full
             if status.state != RaopState::Flushed && (!status.start_ts > 0 || status.start_ts > now_ts + self.latency() as u64) {
-                return Ok(false);
+                unimplemented!();
             }
 
             // move to streaming only when really flushed - not when timedout
@@ -495,10 +501,19 @@ impl RaopClient {
             now_ts = NtpTime::now().into_timestamp(self.codec.sample_rate());
         }
 
-        let accept = now_ts >= status.head_ts + (self.codec.chunk_length() as u64);
+        let chunk_length = self.codec.chunk_length() as u64;
+        let head_ts = status.head_ts;
 
         trace!("[accept_frames] - dropping status");
-        return Ok(accept);
+        drop(status);
+
+        if now_ts < head_ts + chunk_length {
+            let sleep_frames = (head_ts + chunk_length) - now_ts;
+            let sleep_micros = (sleep_frames * 1_000_000) / (self.codec.sample_rate() as u64);
+            delay_for(Duration::from_micros(sleep_micros)).await;
+        }
+
+        Ok(())
     }
 
     pub async fn send_chunk(&mut self, sample: &[u8], playtime: &mut u64) -> Result<(), Box<dyn std::error::Error>> {
