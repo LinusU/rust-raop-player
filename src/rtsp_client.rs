@@ -1,5 +1,4 @@
 use std::io::Write;
-use std::net::ToSocketAddrs;
 use std::str::from_utf8;
 
 use hex::FromHex;
@@ -8,7 +7,7 @@ use openssl::sha::Sha512;
 use openssl::symm::{Cipher, Mode, Crypter};
 use rand::random;
 use tokio::io::BufReader;
-use tokio::net::TcpStream;
+use tokio::net::{TcpStream, ToSocketAddrs};
 use tokio::prelude::*;
 
 use crate::curve25519;
@@ -31,10 +30,8 @@ pub struct RTSPClient {
 }
 
 impl RTSPClient {
-    pub fn connect<A: ToSocketAddrs>(addr: A, sid: &str, user_agent: &str, headers: &[(&str, &str)]) -> Result<RTSPClient, Box<dyn std::error::Error>> {
-        // FIXME: Connect async
-        let socket = std::net::TcpStream::connect(addr)?;
-        let socket = TcpStream::from_std(socket)?;
+    pub async fn connect<A: ToSocketAddrs>(addr: A, sid: &str, user_agent: &str, headers: &[(&str, &str)]) -> Result<RTSPClient, Box<dyn std::error::Error>> {
+        let socket = TcpStream::connect(addr).await?;
         let peer_addr = socket.peer_addr()?;
 
         Ok(RTSPClient {
