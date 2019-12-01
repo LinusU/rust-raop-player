@@ -19,7 +19,9 @@ use futures::future::{Abortable, AbortHandle};
 use log::info;
 use stderrlog;
 use tokio::fs::File;
+use futures::FutureExt;
 use tokio::prelude::*;
+use tokio::time::delay_for;
 
 // Local dependencies
 mod codec;
@@ -89,7 +91,7 @@ impl StatusLogger {
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
         let future = StatusLogger::run(start, frames, latency, sample_rate);
         let future = Abortable::new(future, abort_registration).map(|_| {});
-        tokio::runtime::current_thread::spawn(future);
+        tokio::spawn(future);
         StatusLogger { abort_handle }
     }
 
@@ -110,7 +112,7 @@ impl StatusLogger {
                     TS2MS((frames as u32) - latency, sample_rate));
             }
 
-            tokio::timer::delay_for(Duration::from_secs(1)).await;
+            delay_for(Duration::from_secs(1)).await;
         }
     }
 }
@@ -123,11 +125,8 @@ async fn open_file(name: String) -> Box<dyn AsyncRead + Unpin> {
     }
 }
 
-pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tokio::runtime::current_thread::Runtime::new()?.block_on(_main())
-}
-
-async fn _main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main(basic_scheduler)]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Args = Docopt::new(USAGE)
         .and_then(|d| d.deserialize())
         .unwrap_or_else(|e| e.exit());

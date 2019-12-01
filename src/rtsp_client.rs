@@ -7,7 +7,6 @@ use log::{error, info, debug};
 use openssl::sha::Sha512;
 use openssl::symm::{Cipher, Mode, Crypter};
 use rand::random;
-use tokio_net::driver::Handle;
 use tokio::io::BufReader;
 use tokio::net::TcpStream;
 use tokio::prelude::*;
@@ -35,7 +34,7 @@ impl RTSPClient {
     pub fn connect<A: ToSocketAddrs>(addr: A, sid: &str, user_agent: &str, headers: &[(&str, &str)]) -> Result<RTSPClient, Box<dyn std::error::Error>> {
         // FIXME: Connect async
         let socket = std::net::TcpStream::connect(addr)?;
-        let socket = TcpStream::from_std(socket, &Handle::default())?;
+        let socket = TcpStream::from_std(socket)?;
         let peer_addr = socket.peer_addr()?;
 
         Ok(RTSPClient {

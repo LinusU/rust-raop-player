@@ -2,9 +2,12 @@ use crate::ntp::NtpTime;
 use crate::rtp::{RtpHeader, RtpTimePacket};
 use crate::serialization::{Deserializable, Serializable};
 
+use std::time::Duration;
+
 use futures::future::{Abortable, AbortHandle};
 use futures::prelude::*;
 use tokio::net::UdpSocket;
+use tokio::time::delay_for;
 
 use log::{error, debug};
 
@@ -19,7 +22,7 @@ impl TimingController {
         let future = run(socket).map(|result| { result.unwrap(); });
         let future = Abortable::new(future, abort_registration).map(|_| {});
 
-        tokio::runtime::current_thread::spawn(future);
+        tokio::spawn(future);
 
         TimingController { abort_handle: Some(abort_handle) }
     }
@@ -74,7 +77,7 @@ async fn run(mut socket: UdpSocket) -> Result<(), Box<dyn std::error::Error>> {
 
         if n == 0 {
             error!("read, disconnected on the other end");
-            tokio::timer::delay_for(std::time::Duration::from_millis(100)).await;
+            delay_for(Duration::from_millis(100)).await;
         }
     }
 }

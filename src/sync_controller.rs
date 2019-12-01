@@ -4,18 +4,20 @@ use crate::serialization::{Deserializable, Serializable};
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 
 use futures::future::{Abortable, AbortHandle, join};
 use futures::prelude::*;
-use tokio::sync::Mutex;
+use tokio::net::udp::{RecvHalf, SendHalf};
 use tokio::net::UdpSocket;
-use tokio_net::udp::split::{UdpSocketRecvHalf, UdpSocketSendHalf};
+use tokio::sync::Mutex;
+use tokio::time::delay_for;
 
 use log::{error, warn, info, debug, trace};
 
 pub struct SyncController {
     abort_handle: Option<AbortHandle>,
-    send: Arc<Mutex<UdpSocketSendHalf>>,
+    send: Arc<Mutex<SendHalf>>,
 }
 
 impl SyncController {
@@ -31,7 +33,7 @@ impl SyncController {
         let pair = join(receiving.map(|result| { result.unwrap(); }), sending.map(|result| { result.unwrap(); }));
         let future = Abortable::new(pair, abort_registration).map(|_| {});
 
-        tokio::runtime::current_thread::spawn(future);
+        tokio::spawn(future);
 
         SyncController { abort_handle: Some(abort_handle), send: send_mutex }
     }
@@ -47,7 +49,7 @@ impl SyncController {
     }
 }
 
-async fn send_sync_paket(mutex: Arc<Mutex<UdpSocketSendHalf>>, rsp: RtpSyncPacket) -> Result<(), std::io::Error> {
+async fn send_sync_paket(mutex: Arc<Mutex<SendHalf>>, rsp: RtpSyncPacket) -> Result<(), std::io::Error> {
     let n = {
         let mut send = mutex.lock().await;
         send.send(&rsp.as_bytes()).await?
@@ -59,7 +61,7 @@ async fn send_sync_paket(mutex: Arc<Mutex<UdpSocketSendHalf>>, rsp: RtpSyncPacke
     Ok(())
 }
 
-async fn receive(mut recv: UdpSocketRecvHalf, send_mutex: Arc<Mutex<UdpSocketSendHalf>>, status_mutex: Arc<Mutex<Status>>, sane_mutex: Arc<Mutex<Sane>>, retransmit_mutex: Arc<Mutex<u32>>) -> Result<(), std::io::Error> {
+async fn receive(mut recv: RecvHalf, send_mutex: Arc<Mutex<SendHalf>>, status_mutex: Arc<Mutex<Status>>, sane_mutex: Arc<Mutex<Sane>>, retransmit_mutex: Arc<Mutex<u32>>) -> Result<(), std::io::Error> {
     // Reuse this memory for receiving packet
     let mut buffer = [0u8; RtpLostPacket::SIZE];
 
@@ -110,7 +112,7 @@ async fn receive(mut recv: UdpSocketRecvHalf, send_mutex: Arc<Mutex<UdpSocketSen
     }
 }
 
-async fn send_sync_every_second(socket_mutex: Arc<Mutex<UdpSocketSendHalf>>, status_mutex: Arc<Mutex<Status>>, latency_frames: Arc<AtomicU32>, sample_rate: u32) -> Result<(), std::io::Error> {
+async fn send_sync_every_second(socket_mutex: Arc<Mutex<SendHalf>>, status_mutex: Arc<Mutex<Status>>, latency_frames: Arc<AtomicU32>, sample_rate: u32) -> Result<(), std::io::Error> {
     loop {
         trace!("[SyncController::send_sync_every_second] - aquiring status");
         let status = status_mutex.lock().await;
@@ -123,6 +125,6 @@ async fn send_sync_every_second(socket_mutex: Arc<Mutex<UdpSocketSendHalf>>, sta
         trace!("[SyncController::send_sync_every_second] - dropping status");
         drop(status);
 
-        tokio::timer::delay_for(std::time::Duration::from_secs(1)).await;
+        delay_for(Duration::from_secs(1)).await;
     }
 }
