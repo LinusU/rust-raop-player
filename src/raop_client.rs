@@ -11,7 +11,6 @@ use crate::timing_controller::TimingController;
 
 use std::net::{Ipv4Addr, IpAddr};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use rand::random;
@@ -129,6 +128,8 @@ pub struct RaopClient {
     secret: Option<String>,
     et: Option<String>,
 
+    latency_frames: u32,
+
     // Mutable properties
     keepalive_controller: KeepaliveController,
     rtp_audio: Arc<Mutex<UdpSocket>>,
@@ -142,7 +143,6 @@ pub struct RaopClient {
 
     status: Arc<Mutex<Status>>,
 
-    latency_frames: Arc<AtomicU32>,
     volume: Arc<Mutex<f32>>,
 
     rtsp_client: Arc<Mutex<RTSPClient>>,
@@ -291,16 +291,14 @@ impl RaopClient {
         }
 
         let status_mutex = Arc::new(Mutex::new(status));
-        let latency_frames = Arc::new(AtomicU32::new(latency_frames));
 
         let sync_controller = {
             let status_ref = Arc::clone(&status_mutex);
             let sane_ref = Arc::clone(&sane_mutex);
             let retransmit_ref = Arc::clone(&retransmit_mutex);
-            let latency_frames_ref = Arc::clone(&latency_frames);
             let sample_rate = codec.sample_rate();
 
-            SyncController::start(rtp_ctrl, status_ref, sane_ref, retransmit_ref, latency_frames_ref, sample_rate)
+            SyncController::start(rtp_ctrl, status_ref, sane_ref, retransmit_ref, latency_frames, sample_rate)
         };
 
         {
@@ -359,11 +357,7 @@ impl RaopClient {
 
     pub fn latency(&self) -> u32 {
         // Why do AirPlay devices use required latency + 11025?
-        self.latency_frames.load(Ordering::Relaxed) + LATENCY_MIN
-    }
-
-    pub fn latency_frames_handle(&self) -> Arc<AtomicU32> {
-        Arc::clone(&self.latency_frames)
+        self.latency_frames + LATENCY_MIN
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -422,8 +416,7 @@ impl RaopClient {
                 status.first_ts = status.head_ts;
 
                 if first_pkt {
-                    let latency_frames = self.latency_frames.load(Ordering::Relaxed);
-                    self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), latency_frames, true).await?;
+                    self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), self.latency_frames, true).await?;
                 }
 
                 info!("restarting w/o pause n:{}, hts:{}", now, status.head_ts);
@@ -439,8 +432,7 @@ impl RaopClient {
                 status.head_ts = status.first_ts - self.codec.chunk_length() as u64;
 
                 if first_pkt {
-                    let latency_frames = self.latency_frames.load(Ordering::Relaxed);
-                    self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), latency_frames, true).await?;
+                    self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), self.latency_frames, true).await?;
                 }
 
                 info!("restarting w/ pause n:{}, hts:{} (re-send: {})", now, status.head_ts, chunks);
@@ -533,8 +525,7 @@ impl RaopClient {
             info!("begining to stream (LATE) hts:{} n:{}", status.head_ts, now);
             status.state = RaopState::Streaming;
 
-            let latency_frames = self.latency_frames.load(Ordering::Relaxed);
-            self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), latency_frames, true).await?;
+            self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), self.latency_frames, true).await?;
         }
 
         let encoded = self.codec.encode_chunk(&sample);

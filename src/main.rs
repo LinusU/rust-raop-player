@@ -10,7 +10,6 @@ use docopt::Docopt;
 use std::marker::Unpin;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 // General dependencies
@@ -87,7 +86,7 @@ struct StatusLogger {
 }
 
 impl StatusLogger {
-    fn start(start: NtpTime, frames: Arc<Mutex<u64>>, latency: Arc<AtomicU32>, sample_rate: u32) -> StatusLogger {
+    fn start(start: NtpTime, frames: Arc<Mutex<u64>>, latency: u32, sample_rate: u32) -> StatusLogger {
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
         let future = StatusLogger::run(start, frames, latency, sample_rate);
         let future = Abortable::new(future, abort_registration).map(|_| {});
@@ -99,12 +98,11 @@ impl StatusLogger {
         self.abort_handle.abort();
     }
 
-    async fn run(start: NtpTime, frames: Arc<Mutex<u64>>, latency: Arc<AtomicU32>, sample_rate: u32) {
+    async fn run(start: NtpTime, frames: Arc<Mutex<u64>>, latency: u32, sample_rate: u32) {
         loop {
             let now = NtpTime::now();
 
             let frames = *frames.lock().unwrap();
-            let latency = latency.load(Ordering::Relaxed);
 
             if frames > 0 && frames > latency as u64 {
                 info!("at {} ({} ms after start), played {} ms",
@@ -167,7 +165,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })?;
     }
 
-    let status_logger = StatusLogger::start(start, Arc::clone(&frames), raopcl.latency_frames_handle(), raopcl.sample_rate());
+    let status_logger = StatusLogger::start(start, Arc::clone(&frames), raopcl.latency(), raopcl.sample_rate());
 
     loop {
         if *status.lock().unwrap() == Status::Playing {

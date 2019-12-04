@@ -3,7 +3,6 @@ use crate::rtp::{RtpAudioRetransmissionPacket, RtpLostPacket, RtpSyncPacket};
 use crate::serialization::{Deserializable, Serializable};
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use futures::future::{Abortable, AbortHandle, join};
@@ -21,7 +20,7 @@ pub struct SyncController {
 }
 
 impl SyncController {
-    pub fn start(socket: UdpSocket, status_mutex: Arc<Mutex<Status>>, sane_mutex: Arc<Mutex<Sane>>, retransmit_mutex: Arc<Mutex<u32>>, latency_frames: Arc<AtomicU32>, sample_rate: u32) -> SyncController {
+    pub fn start(socket: UdpSocket, status_mutex: Arc<Mutex<Status>>, sane_mutex: Arc<Mutex<Sane>>, retransmit_mutex: Arc<Mutex<u32>>, latency_frames: u32, sample_rate: u32) -> SyncController {
         let (recv, send) = socket.split();
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
 
@@ -112,13 +111,12 @@ async fn receive(mut recv: RecvHalf, send_mutex: Arc<Mutex<SendHalf>>, status_mu
     }
 }
 
-async fn send_sync_every_second(socket_mutex: Arc<Mutex<SendHalf>>, status_mutex: Arc<Mutex<Status>>, latency_frames: Arc<AtomicU32>, sample_rate: u32) -> Result<(), std::io::Error> {
+async fn send_sync_every_second(socket_mutex: Arc<Mutex<SendHalf>>, status_mutex: Arc<Mutex<Status>>, latency_frames: u32, sample_rate: u32) -> Result<(), std::io::Error> {
     loop {
         trace!("[SyncController::send_sync_every_second] - aquiring status");
         let status = status_mutex.lock().await;
         trace!("[SyncController::send_sync_every_second] - got status");
 
-        let latency_frames = latency_frames.load(Ordering::Relaxed);
         let rsp = RtpSyncPacket::build(status.head_ts, sample_rate, latency_frames, false);
         send_sync_paket(Arc::clone(&socket_mutex), rsp).await?;
 
