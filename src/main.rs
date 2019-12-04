@@ -10,7 +10,7 @@ use docopt::Docopt;
 use std::marker::Unpin;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 // General dependencies
@@ -87,7 +87,7 @@ struct StatusLogger {
 }
 
 impl StatusLogger {
-    fn start(start: NtpTime, frames: Arc<AtomicU64>, latency: Arc<AtomicU32>, sample_rate: u32) -> StatusLogger {
+    fn start(start: NtpTime, frames: Arc<Mutex<u64>>, latency: Arc<AtomicU32>, sample_rate: u32) -> StatusLogger {
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
         let future = StatusLogger::run(start, frames, latency, sample_rate);
         let future = Abortable::new(future, abort_registration).map(|_| {});
@@ -99,11 +99,11 @@ impl StatusLogger {
         self.abort_handle.abort();
     }
 
-    async fn run(start: NtpTime, frames: Arc<AtomicU64>, latency: Arc<AtomicU32>, sample_rate: u32) {
+    async fn run(start: NtpTime, frames: Arc<Mutex<u64>>, latency: Arc<AtomicU32>, sample_rate: u32) {
         loop {
             let now = NtpTime::now();
 
-            let frames = frames.load(Ordering::Relaxed);
+            let frames = *frames.lock().unwrap();
             let latency = latency.load(Ordering::Relaxed);
 
             if frames > 0 && frames > latency as u64 {
@@ -156,7 +156,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut buf = [0; (MAX_SAMPLES_PER_CHUNK as usize) * 4];
 
-    let frames = Arc::new(AtomicU64::new(0));
+    let frames = Arc::new(Mutex::new(0u64));
     let mut playtime: u64 = 0;
 
     {
@@ -175,7 +175,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if n == 0 { break }
             raopcl.accept_frames().await?;
             raopcl.send_chunk(&buf[0..n], &mut playtime).await?;
-            frames.fetch_add((n / 4) as u64, Ordering::Relaxed);
+            *frames.lock().unwrap() += (n / 4) as u64;
         }
 
         if *status.lock().unwrap() == Status::Stopped {
