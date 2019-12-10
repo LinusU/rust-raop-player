@@ -7,8 +7,8 @@ extern crate serde_derive;
 use docopt::Docopt;
 
 // Standard dependencies
-use std::marker::Unpin;
 use std::net::Ipv4Addr;
+use std::os::unix::io::FromRawFd;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -115,11 +115,13 @@ impl StatusLogger {
     }
 }
 
-async fn open_file(name: String) -> Box<dyn AsyncRead + Unpin> {
+async fn open_file(name: String) -> io::Result<File> {
     if name == "-" {
-        Box::new(tokio::io::stdin()) as Box<dyn AsyncRead + Unpin>
+        // FIXME: Using tokio::io::stdin results in glitched audio
+        // This is safe because this is the only thing accessing stdin
+        Ok(File::from_std(unsafe { std::fs::File::from_raw_fd(0) }))
     } else {
-        Box::new(File::open(name).await.unwrap()) as Box<dyn AsyncRead + Unpin>
+        File::open(name).await
     }
 }
 
@@ -135,7 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let codec = Codec::new(args.flag_a, MAX_SAMPLES_PER_CHUNK, 44100, 16, 2);
     let crypto = Crypto::new(args.flag_e);
     let volume = RaopClient::float_volume(args.flag_v);
-    let mut infile = open_file(args.arg_filename).await;
+    let mut infile = open_file(args.arg_filename).await?;
 
     let mut raopcl = RaopClient::connect(host, codec, args.flag_l, crypto, false, None, None, None, volume, args.arg_server_ip, args.flag_p, true).await?;
 
