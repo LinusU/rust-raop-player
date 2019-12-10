@@ -7,27 +7,35 @@ extern crate serde_derive;
 use docopt::Docopt;
 
 // Standard dependencies
-use std::fs::File;
-use std::io;
+use std::marker::Unpin;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 // General dependencies
 use ctrlc;
+use futures::future::{Abortable, AbortHandle};
 use log::info;
 use stderrlog;
+use tokio::fs::File;
+use futures::FutureExt;
+use tokio::prelude::*;
+use tokio::time::delay_for;
 
 // Local dependencies
 mod codec;
 mod crypto;
 mod curve25519;
+mod keepalive_controller;
 mod meta_data;
 mod ntp;
 mod raop_client;
 mod rtp;
 mod rtsp_client;
 mod serialization;
+mod sync_controller;
+mod timing_controller;
 
 use crate::codec::Codec;
 use crate::crypto::Crypto;
@@ -74,28 +82,64 @@ enum Status {
     Playing,
 }
 
-fn open_file(name: String) -> Box<dyn io::Read> {
-    if name == "-" {
-        Box::new(io::stdin())
-    } else {
-        Box::new(File::open(name).unwrap())
+struct StatusLogger {
+    abort_handle: AbortHandle,
+}
+
+impl StatusLogger {
+    fn start(start: NtpTime, frames: Arc<AtomicU64>, latency: Arc<AtomicU32>, sample_rate: u32) -> StatusLogger {
+        let (abort_handle, abort_registration) = AbortHandle::new_pair();
+        let future = StatusLogger::run(start, frames, latency, sample_rate);
+        let future = Abortable::new(future, abort_registration).map(|_| {});
+        tokio::spawn(future);
+        StatusLogger { abort_handle }
+    }
+
+    fn stop(self) {
+        self.abort_handle.abort();
+    }
+
+    async fn run(start: NtpTime, frames: Arc<AtomicU64>, latency: Arc<AtomicU32>, sample_rate: u32) {
+        loop {
+            let now = NtpTime::now();
+
+            let frames = frames.load(Ordering::Relaxed);
+            let latency = latency.load(Ordering::Relaxed);
+
+            if frames > 0 && frames > latency as u64 {
+                info!("at {} ({} ms after start), played {} ms",
+                    now, (now - start).as_millis(),
+                    TS2MS((frames as u32) - latency, sample_rate));
+            }
+
+            delay_for(Duration::from_secs(1)).await;
+        }
     }
 }
 
-fn main() -> Result<(), Box<std::error::Error>> {
+async fn open_file(name: String) -> Box<dyn AsyncRead + Unpin> {
+    if name == "-" {
+        Box::new(tokio::io::stdin()) as Box<dyn AsyncRead + Unpin>
+    } else {
+        Box::new(File::open(name).await.unwrap()) as Box<dyn AsyncRead + Unpin>
+    }
+}
+
+#[tokio::main(basic_scheduler)]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Args = Docopt::new(USAGE)
         .and_then(|d| d.deserialize())
         .unwrap_or_else(|e| e.exit());
 
-    stderrlog::new().verbosity(args.flag_d).timestamp(stderrlog::Timestamp::Microsecond).color(stderrlog::ColorChoice::Never).init().unwrap();
+    stderrlog::new().verbosity(args.flag_d).timestamp(stderrlog::Timestamp::Microsecond).color(stderrlog::ColorChoice::Never).init()?;
 
     let host = Ipv4Addr::UNSPECIFIED;
     let codec = Codec::new(args.flag_a, MAX_SAMPLES_PER_CHUNK, 44100, 16, 2);
     let crypto = Crypto::new(args.flag_e);
     let volume = RaopClient::float_volume(args.flag_v);
-    let mut infile = open_file(args.arg_filename);
+    let mut infile = open_file(args.arg_filename).await;
 
-    let mut raopcl = RaopClient::connect(host, codec, args.flag_l, crypto, false, None, None, None, volume, args.arg_server_ip, args.flag_p, true).unwrap();
+    let mut raopcl = RaopClient::connect(host, codec, args.flag_l, crypto, false, None, None, None, volume, args.arg_server_ip, args.flag_p, true).await?;
 
     let latency = raopcl.latency();
 
@@ -105,16 +149,14 @@ fn main() -> Result<(), Box<std::error::Error>> {
         MetaDataItem::item_kind(2),
     ]);
 
-    raopcl.set_meta_data(meta_data)?;
+    raopcl.set_meta_data(meta_data).await?;
 
     let start = NtpTime::now();
     let status = Arc::new(Mutex::new(Status::Playing));
 
     let mut buf = [0; (MAX_SAMPLES_PER_CHUNK as usize) * 4];
 
-    let mut last_keepalive = NtpTime::ZERO;
-    let mut last_status_log = NtpTime::ZERO;
-    let mut frames: u64 = 0;
+    let frames = Arc::new(AtomicU64::new(0));
     let mut playtime: u64 = 0;
 
     {
@@ -122,43 +164,28 @@ fn main() -> Result<(), Box<std::error::Error>> {
         ctrlc::set_handler(move || {
             info!("Recevied SIGINT, stopping playback");
             *status_handle.lock().unwrap() = Status::Stopped;
-        }).unwrap();
+        })?;
     }
 
+    let status_logger = StatusLogger::start(start, Arc::clone(&frames), raopcl.latency_frames_handle(), raopcl.sample_rate());
+
     loop {
-        let now = NtpTime::now();
-
-        if (now - last_status_log) > Duration::from_secs(1) {
-            last_status_log = now;
-
-            if frames > 0 && frames > raopcl.latency().into() {
-                info!("at {} ({} ms after start), played {} ms",
-                    now, (now - start).as_millis(),
-                    TS2MS((frames as u32) - raopcl.latency(), raopcl.sample_rate()));
-            }
-        }
-
-        if (now - last_keepalive) > Duration::from_secs(30) {
-            last_keepalive = now;
-
-            info!("sending keepalive packet");
-            raopcl.send_keepalive()?;
-        }
-
-        if *status.lock().unwrap() == Status::Playing && raopcl.accept_frames()? {
-            let n = infile.read(&mut buf).unwrap();
+        if *status.lock().unwrap() == Status::Playing {
+            let n = infile.read(&mut buf).await?;
             if n == 0 { break }
-            raopcl.send_chunk(&buf[0..n], &mut playtime)?;
-            frames += (n / 4) as u64;
+            raopcl.accept_frames().await?;
+            raopcl.send_chunk(&buf[0..n], &mut playtime).await?;
+            frames.fetch_add((n / 4) as u64, Ordering::Relaxed);
         }
 
         if *status.lock().unwrap() == Status::Stopped {
-            raopcl.stop();
+            raopcl.stop().await;
             break
         }
 
-        if !raopcl.is_playing() { break }
+        if !raopcl.is_playing().await { break }
     }
 
-    Ok(())
+    status_logger.stop();
+    raopcl.teardown().await
 }

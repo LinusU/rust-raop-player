@@ -16,7 +16,7 @@ pub struct RtpHeader {
 impl Deserializable for RtpHeader {
     const SIZE: usize = 4;
 
-    fn deserialize(reader: &mut Read) -> io::Result<RtpHeader> {
+    fn deserialize(reader: &mut dyn Read) -> io::Result<RtpHeader> {
         let proto = reader.read_u8()?;
         let type_ = reader.read_u8()?;
         let seq = reader.read_u16::<BE>()?;
@@ -30,7 +30,7 @@ impl Serializable for RtpHeader {
         RtpHeader::SIZE
     }
 
-    fn serialize(&self, writer: &mut Write) -> io::Result<()> {
+    fn serialize(&self, writer: &mut dyn Write) -> io::Result<()> {
         writer.write_u8(self.proto)?;
         writer.write_u8(self.type_)?;
         writer.write_u16::<BE>(self.seq)
@@ -44,12 +44,32 @@ pub struct RtpSyncPacket {
     pub rtp_timestamp: u32,
 }
 
+impl RtpSyncPacket {
+    pub fn build(timestamp: u64, sample_rate: u32, latency_frames: u32, first: bool) -> RtpSyncPacket {
+        RtpSyncPacket {
+            header: RtpHeader {
+                proto: 0x80 | if first { 0x10 } else { 0x00 },
+                type_: 0x54 | 0x80,
+                // seems that seq=7 shall be forced
+                seq: 7,
+            },
+
+            // set the NTP time
+            curr_time: NtpTime::from_timestamp(timestamp, sample_rate),
+
+            // The DAC time is synchronized with gettime_ms(), minus the latency.
+            rtp_timestamp: (timestamp as u32),
+            rtp_timestamp_latency: if (latency_frames as u64) > timestamp { 0 } else { ((timestamp - latency_frames as u64) as u32) },
+        }
+    }
+}
+
 impl Serializable for RtpSyncPacket {
     fn size(&self) -> usize {
         self.header.size() + 16
     }
 
-    fn serialize(&self, writer: &mut Write) -> io::Result<()> {
+    fn serialize(&self, writer: &mut dyn Write) -> io::Result<()> {
         self.header.serialize(writer)?;
         writer.write_u32::<BE>(self.rtp_timestamp_latency)?;
         self.curr_time.serialize(writer)?;
@@ -69,7 +89,7 @@ impl Serializable for RtpAudioPacket {
         self.header.size() + 8 + self.data.len()
     }
 
-    fn serialize(&self, writer: &mut Write) -> io::Result<()> {
+    fn serialize(&self, writer: &mut dyn Write) -> io::Result<()> {
         self.header.serialize(writer)?;
         writer.write_u32::<BE>(self.timestamp)?;
         writer.write_u32::<BE>(self.ssrc)?;
@@ -92,7 +112,7 @@ impl<'a> Serializable for RtpAudioRetransmissionPacket<'a> {
         RETRANSMISSION_HEADER.size() + self.packet.size()
     }
 
-    fn serialize(&self, writer: &mut Write) -> io::Result<()> {
+    fn serialize(&self, writer: &mut dyn Write) -> io::Result<()> {
         RETRANSMISSION_HEADER.serialize(writer)?;
         self.packet.serialize(writer)
     }
@@ -108,7 +128,7 @@ pub struct RtpLostPacket {
 impl Deserializable for RtpLostPacket {
     const SIZE: usize = RtpHeader::SIZE + 2 + 2;
 
-    fn deserialize(reader: &mut Read) -> io::Result<RtpLostPacket> {
+    fn deserialize(reader: &mut dyn Read) -> io::Result<RtpLostPacket> {
         let header = RtpHeader::deserialize(reader)?;
         let seq_number = reader.read_u16::<BE>()?;
         let n = reader.read_u16::<BE>()?;
@@ -128,7 +148,7 @@ pub struct RtpTimePacket {
 impl Deserializable for RtpTimePacket {
     const SIZE: usize = RtpHeader::SIZE + 4 + NtpTime::SIZE + NtpTime::SIZE + NtpTime::SIZE;
 
-    fn deserialize(reader: &mut Read) -> io::Result<RtpTimePacket> {
+    fn deserialize(reader: &mut dyn Read) -> io::Result<RtpTimePacket> {
         let header = RtpHeader::deserialize(reader)?;
         let dummy = reader.read_u32::<BE>()?;
         let ref_time = NtpTime::deserialize(reader)?;
@@ -144,7 +164,7 @@ impl Serializable for RtpTimePacket {
         RtpTimePacket::SIZE
     }
 
-    fn serialize(&self, writer: &mut Write) -> io::Result<()> {
+    fn serialize(&self, writer: &mut dyn Write) -> io::Result<()> {
         self.header.serialize(writer)?;
         writer.write_u32::<BE>(self.dummy)?;
         self.ref_time.serialize(writer)?;
