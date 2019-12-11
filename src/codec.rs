@@ -1,34 +1,38 @@
+use std::convert::TryInto;
 use std::fmt::{self, Formatter, Display};
 
 use alac_encoder::{AlacEncoder, FormatDescription, MAX_ESCAPE_HEADER_BYTES};
 
+use crate::frames::Frames;
+use crate::sample_rate::SampleRate;
+
 pub enum Codec {
     ALAC(AlacEncoder, FormatDescription),
-    PCM { chunk_length: u32, sample_rate: u32, sample_size: u32, channels: u8 },
+    PCM { chunk_length: Frames, sample_rate: SampleRate, sample_size: u32, channels: u8 },
 }
 
 impl Codec {
-    pub fn new(alac: bool, chunk_length: u32, sample_rate: u32, sample_size: u32, channels: u8) -> Codec {
+    pub fn new(alac: bool, chunk_length: Frames, sample_rate: SampleRate, sample_size: u32, channels: u8) -> Codec {
         if alac {
             assert_eq!(sample_size, 16);
-            let input_format = FormatDescription::pcm::<i16>(sample_rate as f64, channels as u32);
-            let output_format = FormatDescription::alac(sample_rate as f64, chunk_length, channels as u32);
+            let input_format = FormatDescription::pcm::<i16>(u64::from(sample_rate) as f64, channels as u32);
+            let output_format = FormatDescription::alac(u64::from(sample_rate) as f64, u64::from(chunk_length) as u32, channels as u32);
             Codec::ALAC(AlacEncoder::new(&output_format), input_format)
         } else {
             Codec::PCM { chunk_length, sample_rate, sample_size, channels }
         }
     }
 
-    pub fn chunk_length(&self) -> u32 {
+    pub fn chunk_length(&self) -> Frames {
         match self {
-            Codec::ALAC(ref encoder, _) => encoder.frames() as u32,
+            Codec::ALAC(ref encoder, _) => (encoder.frames() as u64).into(),
             Codec::PCM { chunk_length, .. } => *chunk_length,
         }
     }
 
-    pub fn sample_rate(&self) -> u32 {
+    pub fn sample_rate(&self) -> SampleRate {
         match self {
-            Codec::ALAC(ref encoder, _) => encoder.sample_rate() as u32,
+            Codec::ALAC(ref encoder, _) => (encoder.sample_rate() as u64).try_into().unwrap(),
             Codec::PCM { sample_rate, .. } => *sample_rate,
         }
     }
