@@ -1,5 +1,8 @@
+use crate::frames::Frames;
 use crate::ntp::NtpTime;
+use crate::sample_rate::SampleRate;
 use crate::serialization::{Deserializable, Serializable};
+
 use std::io::{self, Read, Write};
 
 use byteorder::{BE, ReadBytesExt, WriteBytesExt};
@@ -45,7 +48,7 @@ pub struct RtpSyncPacket {
 }
 
 impl RtpSyncPacket {
-    pub fn build(timestamp: u64, sample_rate: u32, latency_frames: u32, first: bool) -> RtpSyncPacket {
+    pub fn build(timestamp: Frames, sample_rate: SampleRate, latency: Frames, first: bool) -> RtpSyncPacket {
         RtpSyncPacket {
             header: RtpHeader {
                 proto: 0x80 | if first { 0x10 } else { 0x00 },
@@ -58,8 +61,8 @@ impl RtpSyncPacket {
             curr_time: NtpTime::from_timestamp(timestamp, sample_rate),
 
             // The DAC time is synchronized with gettime_ms(), minus the latency.
-            rtp_timestamp: (timestamp as u32),
-            rtp_timestamp_latency: if (latency_frames as u64) > timestamp { 0 } else { ((timestamp - latency_frames as u64) as u32) },
+            rtp_timestamp: u64::from(timestamp) as u32,
+            rtp_timestamp_latency: if latency > timestamp { 0 } else { u64::from(timestamp - latency) as u32 },
         }
     }
 }
@@ -79,7 +82,7 @@ impl Serializable for RtpSyncPacket {
 
 pub struct RtpAudioPacket {
     pub header: RtpHeader,
-    pub timestamp: u32,
+    pub timestamp: Frames,
     pub ssrc: u32,
     pub data: Vec<u8>,
 }
@@ -91,7 +94,7 @@ impl Serializable for RtpAudioPacket {
 
     fn serialize(&self, writer: &mut dyn Write) -> io::Result<()> {
         self.header.serialize(writer)?;
-        writer.write_u32::<BE>(self.timestamp)?;
+        writer.write_u32::<BE>(u64::from(self.timestamp) as u32)?;
         writer.write_u32::<BE>(self.ssrc)?;
         writer.write_all(&self.data)
     }

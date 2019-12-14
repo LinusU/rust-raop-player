@@ -1,10 +1,12 @@
 use crate::codec::Codec;
 use crate::crypto::Crypto;
+use crate::frames::Frames;
 use crate::keepalive_controller::KeepaliveController;
 use crate::meta_data::MetaDataItem;
 use crate::ntp::NtpTime;
 use crate::rtp::{RtpHeader, RtpAudioPacket};
 use crate::rtsp_client::RTSPClient;
+use crate::sample_rate::SampleRate;
 use crate::serialization::{Serializable};
 use crate::sync_controller::SyncController;
 use crate::timing_controller::TimingController;
@@ -21,18 +23,10 @@ use tokio::time::delay_for;
 
 const VOLUME_MIN: f32 = -30.0;
 const VOLUME_MAX: f32 = 0.0;
-const LATENCY_MIN: u32 = 11025;
+const LATENCY_MIN: Frames = Frames::new(11025);
 
 pub const MAX_BACKLOG: u16 = 512;
-pub const MAX_SAMPLES_PER_CHUNK: u32 = 352;
-
-fn NTP2MS(ntp: u64) -> u64 { (((ntp >> 10) * 1000) >> 22) }
-fn TS2NTP(ts: u64, rate: u32) -> u64 { ((((ts as u64) << 16) / (rate as u64)) << 16) }
-fn NTP2TS(ntp: u64, rate: u32) -> u64 { (((ntp >> 16) * rate as u64) >> 16) }
-
-fn SEC(ntp: u64) -> u32 { (ntp >> 32) as u32 }
-fn FRAC(ntp: u64) -> u32 { ntp as u32 }
-fn MSEC(ntp: u64) -> u32 { (((ntp >> 16) * 1000) >> 16) as u32 }
+pub const MAX_SAMPLES_PER_CHUNK: Frames = Frames::new(352);
 
 pub fn analyse_setup(setup_headers: Vec<(String, String)>) -> Result<(u16, u16, u16), Box<dyn std::error::Error>> {
     // get transport (port ...) info
@@ -85,17 +79,17 @@ struct MetaDataCapabilities {
 
 pub struct BacklogEntry {
     pub seq_number: u16,
-    pub timestamp: u64,
+    pub timestamp: Frames,
     pub packet: RtpAudioPacket,
 }
 
 pub struct Status {
     state: RaopState,
     seq_number: u16,
-    pub head_ts: u64,
-    pause_ts: u64,
-    start_ts: u64,
-    first_ts: u64,
+    pub head_ts: Frames,
+    pause_ts: Frames,
+    start_ts: Frames,
+    first_ts: Frames,
     first_pkt: bool,
     flushing: bool,
     pub backlog: [Option<BacklogEntry>; 512usize],
@@ -128,7 +122,7 @@ pub struct RaopClient {
     secret: Option<String>,
     et: Option<String>,
 
-    latency_frames: u32,
+    latency: Frames,
 
     // Mutable properties
     keepalive_controller: KeepaliveController,
@@ -149,7 +143,7 @@ pub struct RaopClient {
 }
 
 impl RaopClient {
-    pub async fn connect(local_addr_ipv4: Ipv4Addr, codec: Codec, latency_frames: u32, crypto: Crypto, auth: bool, secret: Option<&str>, et: Option<&str>, md: Option<&str>, volume: f32, remote_addr_ipv4: Ipv4Addr, rtsp_port: u16, set_volume: bool) -> Result<RaopClient, Box<dyn std::error::Error>> {
+    pub async fn connect(local_addr_ipv4: Ipv4Addr, codec: Codec, desired_latency: Frames, crypto: Crypto, auth: bool, secret: Option<&str>, et: Option<&str>, md: Option<&str>, volume: f32, remote_addr_ipv4: Ipv4Addr, rtsp_port: u16, set_volume: bool) -> Result<RaopClient, Box<dyn std::error::Error>> {
         if codec.chunk_length() > MAX_SAMPLES_PER_CHUNK {
             panic!("Chunk length must below {}", MAX_SAMPLES_PER_CHUNK);
         }
@@ -159,7 +153,7 @@ impl RaopClient {
 
         let secret = secret.map(|s| s.to_owned());
         let et = et.map(|s| s.to_owned());
-        let mut latency_frames = std::cmp::max(latency_frames, LATENCY_MIN);
+        let mut latency = std::cmp::max(desired_latency, LATENCY_MIN);
 
         // strcpy(raopcld->DACP_id, DACP_id ? DACP_id : "");
         // strcpy(raopcld->active_remote, active_remote ? active_remote : "");
@@ -255,10 +249,10 @@ impl RaopClient {
         let status = Status {
             state: RaopState::Down,
             seq_number: random(),
-            head_ts: 0,
-            pause_ts: 0,
-            start_ts: 0,
-            first_ts: 0,
+            head_ts: Frames::new(0),
+            pause_ts: Frames::new(0),
+            start_ts: Frames::new(0),
+            first_ts: Frames::new(0),
             first_pkt: false,
             flushing: true,
             // FIXME: https://github.com/rust-lang/rust/issues/49147
@@ -286,8 +280,7 @@ impl RaopClient {
         let returned_latency = record_headers.iter().find(|header| header.0.to_lowercase() == "audio-latency").map(|header| header.1.as_str());
 
         if let Some(returned_latency) = returned_latency {
-            let latency: u32 = returned_latency.parse()?;
-            if latency > latency_frames { latency_frames = latency; }
+            latency = std::cmp::max(latency, returned_latency.parse()?);
         }
 
         let status_mutex = Arc::new(Mutex::new(status));
@@ -298,7 +291,7 @@ impl RaopClient {
             let retransmit_ref = Arc::clone(&retransmit_mutex);
             let sample_rate = codec.sample_rate();
 
-            SyncController::start(rtp_ctrl, status_ref, sane_ref, retransmit_ref, latency_frames, sample_rate)
+            SyncController::start(rtp_ctrl, status_ref, sane_ref, retransmit_ref, latency, sample_rate)
         };
 
         {
@@ -335,7 +328,7 @@ impl RaopClient {
 
             status: status_mutex,
 
-            latency_frames,
+            latency,
             volume: Arc::new(Mutex::new(volume)),
 
             rtsp_client: rtsp_client_mutex,
@@ -355,12 +348,12 @@ impl RaopClient {
         VOLUME_MIN + ((VOLUME_MAX - VOLUME_MIN) * (vol as f32)) / 100.0
     }
 
-    pub fn latency(&self) -> u32 {
+    pub fn latency(&self) -> Frames {
         // Why do AirPlay devices use required latency + 11025?
-        self.latency_frames + LATENCY_MIN
+        self.latency + LATENCY_MIN
     }
 
-    pub fn sample_rate(&self) -> u32 {
+    pub fn sample_rate(&self) -> SampleRate {
         self.codec.sample_rate()
     }
 
@@ -369,7 +362,7 @@ impl RaopClient {
         trace!("[is_playing] - aquiring status");
         let status = self.status.lock().await;
         trace!("[is_playing] - got status");
-        let return_ = status.pause_ts > 0 || now_ts < status.head_ts + (self.latency() as u64);
+        let return_ = status.pause_ts > Frames::new(0) || now_ts < status.head_ts + self.latency();
         trace!("[is_playing] - dropping status");
         return return_;
     }
@@ -379,13 +372,13 @@ impl RaopClient {
         let mut status = self.status.lock().await;
         trace!("[stop] - got status");
         status.flushing = true;
-        status.pause_ts = 0;
+        status.pause_ts = Frames::new(0);
         trace!("[stop] - dropping status");
     }
 
     pub async fn accept_frames(&self) -> Result<(), Box<dyn std::error::Error>> {
         let mut first_pkt = false;
-        let mut now_ts: u64;
+        let mut now_ts: Frames;
 
         trace!("[accept_frames] - aquiring status");
         let mut status = self.status.lock().await;
@@ -398,7 +391,7 @@ impl RaopClient {
             now_ts = now.into_timestamp(self.codec.sample_rate());
 
             // Not flushed yet, but we have time to wait, so pretend we are full
-            if status.state != RaopState::Flushed && (!status.start_ts > 0 || status.start_ts > now_ts + self.latency() as u64) {
+            if status.state != RaopState::Flushed && (status.start_ts == Frames::new(0) || status.start_ts > now_ts + self.latency()) {
                 unimplemented!();
             }
 
@@ -411,28 +404,28 @@ impl RaopClient {
             }
 
             // unpausing ...
-            if status.pause_ts == 0 {
-                status.head_ts = if status.start_ts > 0 { status.start_ts } else { now_ts };
+            if status.pause_ts == Frames::new(0) {
+                status.head_ts = if status.start_ts > Frames::new(0) { status.start_ts } else { now_ts };
                 status.first_ts = status.head_ts;
 
                 if first_pkt {
-                    self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), self.latency_frames, true).await?;
+                    self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), self.latency, true).await?;
                 }
 
                 info!("restarting w/o pause n:{}, hts:{}", now, status.head_ts);
             } else {
                 let mut n: u16;
                 let mut i: u16;
-                let chunks = (self.latency() / self.codec.chunk_length() as u32) as u16;
+                let chunks = (u64::from(self.latency()) / u64::from(self.codec.chunk_length())) as u16;
 
                 // if un-pausing w/o start_time, can anticipate as we have buffer
-                status.first_ts = if status.start_ts > 0 { status.start_ts } else { now_ts - self.latency() as u64 };
+                status.first_ts = if status.start_ts > Frames::new(0) { status.start_ts } else { now_ts - self.latency() };
 
                 // last head_ts shall be first + raopcl_latency - chunk_length
-                status.head_ts = status.first_ts - self.codec.chunk_length() as u64;
+                status.head_ts = status.first_ts - self.codec.chunk_length();
 
                 if first_pkt {
-                    self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), self.latency_frames, true).await?;
+                    self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), self.latency, true).await?;
                 }
 
                 info!("restarting w/ pause n:{}, hts:{} (re-send: {})", now, status.head_ts, chunks);
@@ -440,7 +433,7 @@ impl RaopClient {
                 // search pause_ts in backlog, it should be backward, not too far
                 n = status.seq_number;
                 i = 0;
-                while i < MAX_BACKLOG && status.backlog[(n % MAX_BACKLOG) as usize].as_ref().map(|e| e.timestamp).unwrap_or(0) > status.pause_ts {
+                while i < MAX_BACKLOG && status.backlog[(n % MAX_BACKLOG) as usize].as_ref().map(|e| e.timestamp).unwrap_or(Frames::new(0)) > status.pause_ts {
                     i += 1;
                     n -= 1;
                 }
@@ -458,7 +451,7 @@ impl RaopClient {
 
                         entry.packet.header.type_ = if status.first_pkt { 0xE0 } else { 0x60 };
                         entry.packet.header.seq = status.seq_number;
-                        entry.packet.timestamp = status.head_ts as u32;
+                        entry.packet.timestamp = status.head_ts;
                         status.first_pkt = false;
 
                         self._send_audio(&mut status, &entry.packet).await?;
@@ -472,7 +465,7 @@ impl RaopClient {
                             packet: entry.packet,
                         });
 
-                        status.head_ts += self.codec.chunk_length() as u64;
+                        status.head_ts += self.codec.chunk_length();
 
                         i += 1;
                     }
@@ -481,19 +474,19 @@ impl RaopClient {
                 debug!("finished resend {}", i);
             }
 
-            status.pause_ts = 0;
-            status.start_ts = 0;
+            status.pause_ts = Frames::new(0);
+            status.start_ts = Frames::new(0);
             status.flushing = false;
         }
 
         // when paused, fix "now" at the time when it was paused.
-        if status.pause_ts > 0 {
+        if status.pause_ts > Frames::new(0) {
             now_ts = status.pause_ts;
         } else {
             now_ts = NtpTime::now().into_timestamp(self.codec.sample_rate());
         }
 
-        let chunk_length = self.codec.chunk_length() as u64;
+        let chunk_length = self.codec.chunk_length();
         let head_ts = status.head_ts;
 
         trace!("[accept_frames] - dropping status");
@@ -501,14 +494,14 @@ impl RaopClient {
 
         if now_ts < head_ts + chunk_length {
             let sleep_frames = (head_ts + chunk_length) - now_ts;
-            let sleep_micros = (sleep_frames * 1_000_000) / (self.codec.sample_rate() as u64);
-            delay_for(Duration::from_micros(sleep_micros)).await;
+            let sleep_duration = sleep_frames / self.codec.sample_rate();
+            delay_for(sleep_duration).await;
         }
 
         Ok(())
     }
 
-    pub async fn send_chunk(&mut self, sample: &[u8], playtime: &mut u64) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn send_chunk(&mut self, sample: &[u8], playtime: &mut Duration) -> Result<(), Box<dyn std::error::Error>> {
         let now = NtpTime::now();
 
         trace!("[send_chunk] - aquiring status");
@@ -525,15 +518,15 @@ impl RaopClient {
             info!("begining to stream (LATE) hts:{} n:{}", status.head_ts, now);
             status.state = RaopState::Streaming;
 
-            self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), self.latency_frames, true).await?;
+            self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), self.latency, true).await?;
         }
 
         let encoded = self.codec.encode_chunk(&sample);
         let encrypted = self.crypto.encrypt(encoded)?;
 
-        *playtime = TS2NTP(status.head_ts + self.latency() as u64, self.codec.sample_rate());
+        *playtime = (status.head_ts + self.latency()) / self.codec.sample_rate();
 
-        trace!("sending audio ts:{} (pt:{}.{} now:{}) ", status.head_ts, SEC(*playtime), FRAC(*playtime), NtpTime::now());
+        trace!("sending audio ts:{} (pt:{} now:{}) ", status.head_ts, playtime.as_secs_f32(), NtpTime::now());
 
         status.seq_number = status.seq_number.wrapping_add(1);
 
@@ -543,7 +536,7 @@ impl RaopClient {
                 type_: (if status.first_pkt { 0xE0 } else { 0x60 }),
                 seq: status.seq_number,
             },
-            timestamp: status.head_ts as u32,
+            timestamp: status.head_ts,
             ssrc: (*self.ssrc.lock().await as u32),
             data: encrypted,
         };
@@ -559,13 +552,14 @@ impl RaopClient {
             packet: packet,
         });
 
-        status.head_ts += self.codec.chunk_length() as u64;
+        status.head_ts += self.codec.chunk_length();
 
-        if NTP2MS(*playtime) % 10000 < 8 {
+        // Print extra info every ten seconds
+        if playtime.as_secs() % 10 == 0 && playtime.subsec_millis() < 8 {
             let sane = self.sane.lock().await;
             let retransmit = *self.retransmit.lock().await;
-            info!("check n:{} p:{} ts:{} sn:{}\n               retr: {}, avail: {}, send: {}, select: {})",
-                now.millis(), MSEC(*playtime), status.head_ts, status.seq_number,
+            info!("check n:{} p:{} ts:{} sn:{} retr:{} avail:{} send:{} select:{}",
+                now.millis(), playtime.as_secs_f32(), status.head_ts, status.seq_number,
                 retransmit, sane.audio.avail, sane.audio.send, sane.audio.select);
         }
 
@@ -603,7 +597,7 @@ impl RaopClient {
         self.timing_controller.stop();
 
         let mut rtsp_client = self.rtsp_client.lock().await;
-        rtsp_client.flush(status.seq_number + 1, status.head_ts + 1).await?;
+        rtsp_client.flush(status.seq_number + 1, status.head_ts + Frames::new(1)).await?;
         rtsp_client.teardown().await
     }
 

@@ -11,6 +11,7 @@ use tokio::net::{TcpStream, ToSocketAddrs};
 use tokio::prelude::*;
 
 use crate::curve25519;
+use crate::frames::Frames;
 use crate::meta_data::MetaDataItem;
 use crate::serialization::Serializable;
 
@@ -160,7 +161,7 @@ impl RTSPClient {
         Ok(headers)
     }
 
-    pub async fn record(&mut self, start_seq: u16, start_ts: u64) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
+    pub async fn record(&mut self, start_seq: u16, start_ts: Frames) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
         if self.session.is_none() {
             error!("no session in progress");
             panic!("no session in progress");
@@ -176,14 +177,14 @@ impl RTSPClient {
         self.exec_request("SET_PARAMETER", Body::Text { content_type: "text/parameters", content: param }, vec!(), None).await.map(|_| ())
     }
 
-    pub async fn set_meta_data(&mut self, timestamp: u64, meta_data: MetaDataItem) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn set_meta_data(&mut self, timestamp: Frames, meta_data: MetaDataItem) -> Result<(), Box<dyn std::error::Error>> {
         let rtptime = format!("rtptime={}", timestamp);
         let body = Body::Blob { content_type: "application/x-dmap-tagged", content: &meta_data.as_bytes() };
 
         self.exec_request("SET_PARAMETER", body, vec![("RTP-Info", &rtptime)], None).await.map(|_| ())
     }
 
-    pub async fn flush(&mut self, seq_number: u16, timestamp: u64) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn flush(&mut self, seq_number: u16, timestamp: Frames) -> Result<(), Box<dyn std::error::Error>> {
         let info = format!("seq={};rtptime={}", seq_number, timestamp);
         self.exec_request("FLUSH", Body::None, vec!(("RTP-Info", &info)), None).await.map(|_| ())
     }

@@ -1,5 +1,7 @@
+use crate::frames::Frames;
 use crate::raop_client::{MAX_BACKLOG, Sane, Status};
 use crate::rtp::{RtpAudioRetransmissionPacket, RtpLostPacket, RtpSyncPacket};
+use crate::sample_rate::SampleRate;
 use crate::serialization::{Deserializable, Serializable};
 
 use std::sync::Arc;
@@ -20,14 +22,14 @@ pub struct SyncController {
 }
 
 impl SyncController {
-    pub fn start(socket: UdpSocket, status_mutex: Arc<Mutex<Status>>, sane_mutex: Arc<Mutex<Sane>>, retransmit_mutex: Arc<Mutex<u32>>, latency_frames: u32, sample_rate: u32) -> SyncController {
+    pub fn start(socket: UdpSocket, status_mutex: Arc<Mutex<Status>>, sane_mutex: Arc<Mutex<Sane>>, retransmit_mutex: Arc<Mutex<u32>>, latency: Frames, sample_rate: SampleRate) -> SyncController {
         let (recv, send) = socket.split();
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
 
         let send_mutex = Arc::new(Mutex::new(send));
 
         let receiving = receive(recv, Arc::clone(&send_mutex), Arc::clone(&status_mutex), sane_mutex, retransmit_mutex);
-        let sending = send_sync_every_second(Arc::clone(&send_mutex), status_mutex, latency_frames, sample_rate);
+        let sending = send_sync_every_second(Arc::clone(&send_mutex), status_mutex, latency, sample_rate);
 
         let pair = join(receiving.map(|result| { result.unwrap(); }), sending.map(|result| { result.unwrap(); }));
         let future = Abortable::new(pair, abort_registration).map(|_| {});
@@ -43,8 +45,8 @@ impl SyncController {
         }
     }
 
-    pub fn send_sync(&self, status: &mut Status, sample_rate: u32, latency_frames: u32, first: bool) -> impl std::future::Future<Output = Result<(), std::io::Error>> {
-        send_sync_paket(Arc::clone(&self.send), RtpSyncPacket::build(status.head_ts, sample_rate, latency_frames, first))
+    pub fn send_sync(&self, status: &mut Status, sample_rate: SampleRate, latency: Frames, first: bool) -> impl std::future::Future<Output = Result<(), std::io::Error>> {
+        send_sync_paket(Arc::clone(&self.send), RtpSyncPacket::build(status.head_ts, sample_rate, latency, first))
     }
 }
 
@@ -111,13 +113,13 @@ async fn receive(mut recv: RecvHalf, send_mutex: Arc<Mutex<SendHalf>>, status_mu
     }
 }
 
-async fn send_sync_every_second(socket_mutex: Arc<Mutex<SendHalf>>, status_mutex: Arc<Mutex<Status>>, latency_frames: u32, sample_rate: u32) -> Result<(), std::io::Error> {
+async fn send_sync_every_second(socket_mutex: Arc<Mutex<SendHalf>>, status_mutex: Arc<Mutex<Status>>, latency: Frames, sample_rate: SampleRate) -> Result<(), std::io::Error> {
     loop {
         trace!("[SyncController::send_sync_every_second] - aquiring status");
         let status = status_mutex.lock().await;
         trace!("[SyncController::send_sync_every_second] - got status");
 
-        let rsp = RtpSyncPacket::build(status.head_ts, sample_rate, latency_frames, false);
+        let rsp = RtpSyncPacket::build(status.head_ts, sample_rate, latency, false);
         send_sync_paket(Arc::clone(&socket_mutex), rsp).await?;
 
         trace!("[SyncController::send_sync_every_second] - dropping status");

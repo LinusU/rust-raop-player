@@ -5,6 +5,8 @@ use std::ops::Sub;
 
 use byteorder::{BE, ReadBytesExt, WriteBytesExt};
 
+use crate::frames::Frames;
+use crate::sample_rate::SampleRate;
 use crate::serialization::{Deserializable, Serializable};
 
 #[derive(Clone, Copy)]
@@ -27,16 +29,16 @@ impl NtpTime {
 
     pub fn millis(&self) -> u32 {
         let ntp = ((self.seconds as u64) << 32) | (self.fraction as u64);
-        (((ntp >> 16) * 1000) >> 16) as u32
+        (((ntp >> 10) * 1000) >> 22) as u32
     }
 
-    pub fn into_timestamp(&self, rate: u32) -> u64 {
+    pub fn into_timestamp(&self, sample_rate: SampleRate) -> Frames {
         let ntp = ((self.seconds as u64) << 32) | (self.fraction as u64);
-        return ((ntp >> 16) * rate as u64) >> 16;
+        Frames::new(((ntp >> 16) * u64::from(sample_rate)) >> 16)
     }
 
-    pub fn from_timestamp(ts: u64, rate: u32) -> NtpTime {
-        let ntp = (((ts as u64) << 16) / (rate as u64)) << 16;
+    pub fn from_timestamp(ts: Frames, sample_rate: SampleRate) -> NtpTime {
+        let ntp = (((u64::from(ts)) << 16) / u64::from(sample_rate)) << 16;
 
         NtpTime {
             seconds: (ntp >> 32) as u32,

@@ -1,5 +1,5 @@
 // FIXME: eventually remove these
-#![allow(non_snake_case, dead_code)]
+#![allow(dead_code)]
 
 // Docopt
 #[macro_use]
@@ -26,21 +26,25 @@ use tokio::time::delay_for;
 mod codec;
 mod crypto;
 mod curve25519;
+mod frames;
 mod keepalive_controller;
 mod meta_data;
 mod ntp;
 mod raop_client;
 mod rtp;
 mod rtsp_client;
+mod sample_rate;
 mod serialization;
 mod sync_controller;
 mod timing_controller;
 
 use crate::codec::Codec;
 use crate::crypto::Crypto;
+use crate::frames::Frames;
 use crate::meta_data::MetaDataItem;
 use crate::ntp::NtpTime;
 use crate::raop_client::{RaopClient, MAX_SAMPLES_PER_CHUNK};
+use crate::sample_rate::SampleRate;
 
 const USAGE: &'static str = "
 Usage:
@@ -64,15 +68,11 @@ struct Args {
     flag_a: bool,
     flag_d: usize,
     flag_e: bool,
-    flag_l: u32,
+    flag_l: u64,
     flag_p: u16,
     flag_v: u8,
     flag_help: bool,
 }
-
-fn NTP2MS(ntp: u64) -> u64 { (((ntp >> 10) * 1000) >> 22) }
-fn TS2NTP(ts: u32, rate: u32) -> u64 { ((((ts as u64) << 16) / (rate as u64)) << 16) }
-fn TS2MS(ts: u32, rate: u32) -> u64 { NTP2MS(TS2NTP(ts,rate)) }
 
 #[derive(PartialEq)]
 enum Status {
@@ -86,7 +86,7 @@ struct StatusLogger {
 }
 
 impl StatusLogger {
-    fn start(start: NtpTime, frames: Arc<Mutex<u64>>, latency: u32, sample_rate: u32) -> StatusLogger {
+    fn start(start: NtpTime, frames: Arc<Mutex<Frames>>, latency: Frames, sample_rate: SampleRate) -> StatusLogger {
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
         let future = StatusLogger::run(start, frames, latency, sample_rate);
         let future = Abortable::new(future, abort_registration).map(|_| {});
@@ -98,16 +98,14 @@ impl StatusLogger {
         self.abort_handle.abort();
     }
 
-    async fn run(start: NtpTime, frames: Arc<Mutex<u64>>, latency: u32, sample_rate: u32) {
+    async fn run(start: NtpTime, frames: Arc<Mutex<Frames>>, latency: Frames, sample_rate: SampleRate) {
         loop {
             let now = NtpTime::now();
 
             let frames = *frames.lock().unwrap();
 
-            if frames > 0 && frames > latency as u64 {
-                info!("at {} ({} ms after start), played {} ms",
-                    now, (now - start).as_millis(),
-                    TS2MS((frames as u32) - latency, sample_rate));
+            if frames > latency {
+                info!("at {} ({} ms after start), played {} ms", now, (now - start).as_millis(), ((frames - latency) / sample_rate).as_millis());
             }
 
             delay_for(Duration::from_secs(1)).await;
@@ -134,16 +132,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     stderrlog::new().verbosity(args.flag_d).timestamp(stderrlog::Timestamp::Microsecond).color(stderrlog::ColorChoice::Never).init()?;
 
     let host = Ipv4Addr::UNSPECIFIED;
-    let codec = Codec::new(args.flag_a, MAX_SAMPLES_PER_CHUNK, 44100, 16, 2);
+    let codec = Codec::new(args.flag_a, MAX_SAMPLES_PER_CHUNK, SampleRate::Hz44100, 16, 2);
+    let latency = Frames::new(args.flag_l);
     let crypto = Crypto::new(args.flag_e);
     let volume = RaopClient::float_volume(args.flag_v);
     let mut infile = open_file(args.arg_filename).await?;
 
-    let mut raopcl = RaopClient::connect(host, codec, args.flag_l, crypto, false, None, None, None, volume, args.arg_server_ip, args.flag_p, true).await?;
+    let mut raopcl = RaopClient::connect(host, codec, latency, crypto, false, None, None, None, volume, args.arg_server_ip, args.flag_p, true).await?;
 
     let latency = raopcl.latency();
 
-    info!("connected to {} on port {}, player latency is {} ms", args.arg_server_ip, args.flag_p, TS2MS(latency, raopcl.sample_rate()));
+    info!("connected to {} on port {}, player latency is {} ms", args.arg_server_ip, args.flag_p, (latency / raopcl.sample_rate()).as_millis());
 
     let meta_data = MetaDataItem::listing_item(vec![
         MetaDataItem::item_kind(2),
@@ -154,10 +153,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = NtpTime::now();
     let status = Arc::new(Mutex::new(Status::Playing));
 
-    let mut buf = [0; (MAX_SAMPLES_PER_CHUNK as usize) * 4];
+    let mut buf = [0; MAX_SAMPLES_PER_CHUNK.as_usize(4)];
 
-    let frames = Arc::new(Mutex::new(0u64));
-    let mut playtime: u64 = 0;
+    let frames = Arc::new(Mutex::new(Frames::new(0)));
+    let mut playtime = Duration::new(0, 0);
 
     {
         let status_handle = status.clone();
@@ -175,7 +174,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if n == 0 { break }
             raopcl.accept_frames().await?;
             raopcl.send_chunk(&buf[0..n], &mut playtime).await?;
-            *frames.lock().unwrap() += (n / 4) as u64;
+            *frames.lock().unwrap() += Frames::from_usize(n, 4);
         }
 
         if *status.lock().unwrap() == Status::Stopped {
