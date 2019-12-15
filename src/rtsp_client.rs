@@ -206,6 +206,7 @@ impl RTSPClient {
         Ok(self.socket.get_ref().local_addr()?.ip().to_string())
     }
 
+    #[allow(clippy::write_with_newline)]
     async fn exec_request(&mut self, cmd: &str, body: Body<'_>, headers: Vec<(&str, &str)>, url: Option<&str>) -> Result<(Vec<(String, String)>, String), Box<dyn std::error::Error>> {
         let mut req = Vec::new();
 

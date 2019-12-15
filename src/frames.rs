@@ -57,6 +57,7 @@ impl AddAssign for Frames {
 impl Div<SampleRate> for Frames {
     type Output = Duration;
 
+    #[allow(clippy::suspicious_arithmetic_impl)]
     fn div(self, other: SampleRate) -> Duration {
         let sample_rate = u64::from(other);
         Duration::new(self.0 / sample_rate, scale(self.0 % sample_rate, sample_rate - 1))
