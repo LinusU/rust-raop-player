@@ -7,7 +7,7 @@ use crate::frames::Frames;
 use crate::sample_rate::SampleRate;
 
 pub enum Codec {
-    ALAC(AlacEncoder, FormatDescription),
+    ALAC(Box<AlacEncoder>, FormatDescription),
     PCM { chunk_length: Frames, sample_rate: SampleRate, sample_size: u32, channels: u8 },
 }
 
@@ -17,7 +17,7 @@ impl Codec {
             assert_eq!(sample_size, 16);
             let input_format = FormatDescription::pcm::<i16>(u64::from(sample_rate) as f64, channels as u32);
             let output_format = FormatDescription::alac(u64::from(sample_rate) as f64, u64::from(chunk_length) as u32, channels as u32);
-            Codec::ALAC(AlacEncoder::new(&output_format), input_format)
+            Codec::ALAC(Box::new(AlacEncoder::new(&output_format)), input_format)
         } else {
             Codec::PCM { chunk_length, sample_rate, sample_size, channels }
         }
