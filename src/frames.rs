@@ -19,7 +19,7 @@ impl Frames {
         Frames(value)
     }
 
-    pub const fn as_usize(&self, frame_size: usize) -> usize {
+    pub const fn as_usize(self, frame_size: usize) -> usize {
         (self.0 as usize) * frame_size
     }
 
@@ -57,6 +57,7 @@ impl AddAssign for Frames {
 impl Div<SampleRate> for Frames {
     type Output = Duration;
 
+    #[allow(clippy::suspicious_arithmetic_impl)]
     fn div(self, other: SampleRate) -> Duration {
         let sample_rate = u64::from(other);
         Duration::new(self.0 / sample_rate, scale(self.0 % sample_rate, sample_rate - 1))

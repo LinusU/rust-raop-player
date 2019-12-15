@@ -22,17 +22,17 @@ impl NtpTime {
         let unix = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
 
         NtpTime {
-            seconds: (unix.as_secs() + 0x83AA7E80) as u32,
-            fraction: (((unix.subsec_micros() as u64) << 32) / 1000000) as u32,
+            seconds: (unix.as_secs() + 0x83AA_7E80) as u32,
+            fraction: (((unix.subsec_micros() as u64) << 32) / 1_000_000) as u32,
         }
     }
 
-    pub fn millis(&self) -> u32 {
+    pub fn millis(self) -> u32 {
         let ntp = ((self.seconds as u64) << 32) | (self.fraction as u64);
         (((ntp >> 10) * 1000) >> 22) as u32
     }
 
-    pub fn into_timestamp(&self, sample_rate: SampleRate) -> Frames {
+    pub fn into_timestamp(self, sample_rate: SampleRate) -> Frames {
         let ntp = ((self.seconds as u64) << 32) | (self.fraction as u64);
         Frames::new(((ntp >> 16) * u64::from(sample_rate)) >> 16)
     }
@@ -59,16 +59,11 @@ impl Sub for NtpTime {
             panic!("Cannot create negative durations");
         }
 
-        let secs: u32;
-        let fraction: u32;
-
-        if self.fraction < other.fraction {
-            secs = self.seconds - other.seconds - 1;
-            fraction = std::u32::MAX - other.fraction + self.fraction;
+        let (secs, fraction) = if self.fraction < other.fraction {
+            (self.seconds - other.seconds - 1, std::u32::MAX - other.fraction + self.fraction)
         } else {
-            secs = self.seconds - other.seconds;
-            fraction = self.fraction - other.fraction;
-        }
+            (self.seconds - other.seconds, self.fraction - other.fraction)
+        };
 
         let nanos = ((fraction as f64) / (std::u32::MAX as f64)) * 1_000_000_000f64;
 

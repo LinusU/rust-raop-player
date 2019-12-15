@@ -10,6 +10,7 @@ use crate::sample_rate::SampleRate;
 use crate::serialization::{Serializable};
 use crate::sync_controller::SyncController;
 use crate::timing_controller::TimingController;
+use crate::volume::Volume;
 
 use std::net::{Ipv4Addr, IpAddr};
 use std::sync::Arc;
@@ -21,8 +22,6 @@ use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tokio::time::delay_for;
 
-const VOLUME_MIN: f32 = -30.0;
-const VOLUME_MAX: f32 = 0.0;
 const LATENCY_MIN: Frames = Frames::new(11025);
 
 pub const MAX_BACKLOG: u16 = 512;
@@ -137,13 +136,13 @@ pub struct RaopClient {
 
     status: Arc<Mutex<Status>>,
 
-    volume: Arc<Mutex<f32>>,
+    volume: Arc<Mutex<Volume>>,
 
     rtsp_client: Arc<Mutex<RTSPClient>>,
 }
 
 impl RaopClient {
-    pub async fn connect(local_addr_ipv4: Ipv4Addr, codec: Codec, desired_latency: Frames, crypto: Crypto, auth: bool, secret: Option<&str>, et: Option<&str>, md: Option<&str>, volume: f32, remote_addr_ipv4: Ipv4Addr, rtsp_port: u16, set_volume: bool) -> Result<RaopClient, Box<dyn std::error::Error>> {
+    pub async fn connect(local_addr_ipv4: Ipv4Addr, codec: Codec, desired_latency: Frames, crypto: Crypto, auth: bool, secret: Option<&str>, et: Option<&str>, md: Option<&str>, volume: Volume, remote_addr_ipv4: Ipv4Addr, rtsp_port: u16, set_volume: bool) -> Result<RaopClient, Box<dyn std::error::Error>> {
         if codec.chunk_length() > MAX_SAMPLES_PER_CHUNK {
             panic!("Chunk length must below {}", MAX_SAMPLES_PER_CHUNK);
         }
@@ -341,13 +340,6 @@ impl RaopClient {
         Ok(client)
     }
 
-    pub fn float_volume(vol: u8) -> f32 {
-        if vol == 0 { return -144.0; }
-        if vol >= 100 { return VOLUME_MAX; }
-
-        VOLUME_MIN + ((VOLUME_MAX - VOLUME_MIN) * (vol as f32)) / 100.0
-    }
-
     pub fn latency(&self) -> Frames {
         // Why do AirPlay devices use required latency + 11025?
         self.latency + LATENCY_MIN
@@ -364,7 +356,7 @@ impl RaopClient {
         trace!("[is_playing] - got status");
         let return_ = status.pause_ts > Frames::new(0) || now_ts < status.head_ts + self.latency();
         trace!("[is_playing] - dropping status");
-        return return_;
+        return_
     }
 
     pub async fn stop(&self) {
@@ -433,7 +425,7 @@ impl RaopClient {
                 // search pause_ts in backlog, it should be backward, not too far
                 n = status.seq_number;
                 i = 0;
-                while i < MAX_BACKLOG && status.backlog[(n % MAX_BACKLOG) as usize].as_ref().map(|e| e.timestamp).unwrap_or(Frames::new(0)) > status.pause_ts {
+                while i < MAX_BACKLOG && status.backlog[(n % MAX_BACKLOG) as usize].as_ref().map(|e| e.timestamp).unwrap_or_else(|| Frames::new(0)) > status.pause_ts {
                     i += 1;
                     n -= 1;
                 }
@@ -549,7 +541,7 @@ impl RaopClient {
         status.backlog[n] = Some(BacklogEntry {
             seq_number: status.seq_number,
             timestamp: status.head_ts,
-            packet: packet,
+            packet,
         });
 
         status.head_ts += self.codec.chunk_length();
@@ -571,16 +563,15 @@ impl RaopClient {
     async fn _set_volume(&self) -> Result<(), Box<dyn std::error::Error>> {
         if (*self.status.lock().await).state < RaopState::Flushed { return Ok(()); }
 
-        let parameter = format!("volume: {}\r\n", *self.volume.lock().await);
+        let parameter = format!("volume: {}\r\n", self.volume.lock().await.into_f32());
         (*self.rtsp_client.lock().await).set_parameter(&parameter).await?;
 
         Ok(())
     }
 
-    pub async fn set_volume(&self, vol: f32) -> Result<(), Box<dyn std::error::Error>> {
-        if (vol < -30.0 || vol > 0.0) && vol != -144.0 { panic!("Invalid volume"); }
+    pub async fn set_volume(&self, vol: Volume) -> Result<(), Box<dyn std::error::Error>> {
         *self.volume.lock().await = vol;
-        return self._set_volume().await;
+        self._set_volume().await
     }
 
     pub async fn set_meta_data(&self, meta_data: MetaDataItem) -> Result<(), Box<dyn std::error::Error>> {

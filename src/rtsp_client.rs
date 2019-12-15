@@ -58,7 +58,6 @@ impl RTSPClient {
         // retrieve authentication keys from secret
         let secret = <[u8; curve25519::SECRET_KEY_SIZE]>::from_hex(secret_hex)?;
         let (auth_priv, auth_pub) = curve25519::create_key_pair(&secret);
-        drop(secret);
 
         // create a verification public key
         let verify_secret: [u8; curve25519::SECRET_KEY_SIZE] = random();
@@ -130,7 +129,6 @@ impl RTSPClient {
     pub async fn auth_setup(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let secret: [u8; curve25519::SECRET_KEY_SIZE] = random();
         let pub_key = curve25519::calculate_public_key(&secret);
-        drop(secret);
 
         let mut buf = Vec::with_capacity(1 + curve25519::PUBLIC_KEY_SIZE);
         buf.push(0x01);
@@ -208,6 +206,7 @@ impl RTSPClient {
         Ok(self.socket.get_ref().local_addr()?.ip().to_string())
     }
 
+    #[allow(clippy::write_with_newline)]
     async fn exec_request(&mut self, cmd: &str, body: Body<'_>, headers: Vec<(&str, &str)>, url: Option<&str>) -> Result<(Vec<(String, String)>, String), Box<dyn std::error::Error>> {
         let mut req = Vec::new();
 
@@ -243,19 +242,19 @@ impl RTSPClient {
 
         write!(&mut req, "\r\n")?;
 
-        if let Body::Text { content_type: _, ref content } = body {
+        if let Body::Text { ref content, .. } = body {
             write!(&mut req, "{}", content)?;
         }
 
-        if let Body::Blob { content_type: _, ref content } = body {
+        if let Body::Blob { ref content, .. } = body {
             req.extend_from_slice(content);
         }
 
         self.socket.get_mut().write_all(&req).await?;
 
         match body {
-            Body::Text { content_type: _, content: _ } => debug!("----> : write {}", from_utf8(&req).unwrap()),
-            Body::Blob { content_type: _, content: _ } => debug!("----> : send binary request"),
+            Body::Text { .. } => debug!("----> : write {}", from_utf8(&req).unwrap()),
+            Body::Blob { .. } => debug!("----> : send binary request"),
             Body::None => debug!("----> : write {}", from_utf8(&req).unwrap()),
         }
 
@@ -263,7 +262,7 @@ impl RTSPClient {
             let mut line = String::new();
             self.socket.read_line(&mut line).await?;
 
-            let status = line.splitn(3, ' ').skip(1).next().unwrap();
+            let status = line.splitn(3, ' ').nth(1).unwrap();
 
             if status != "200" {
                 error!("<------ : request failed, error {}", line);
