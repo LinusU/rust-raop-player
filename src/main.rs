@@ -71,7 +71,6 @@ struct Args {
     flag_l: u64,
     flag_p: u16,
     flag_v: u8,
-    flag_help: bool,
 }
 
 #[derive(PartialEq)]
