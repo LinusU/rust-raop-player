@@ -19,7 +19,7 @@ impl Frames {
         Frames(value)
     }
 
-    pub const fn as_usize(&self, frame_size: usize) -> usize {
+    pub const fn as_usize(self, frame_size: usize) -> usize {
         (self.0 as usize) * frame_size
     }
 

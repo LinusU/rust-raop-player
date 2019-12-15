@@ -22,15 +22,15 @@ pub enum IntoSampleRateError {
 impl From<SampleRate> for u64 {
     fn from(sample_rate: SampleRate) -> u64 {
         match sample_rate {
-            SampleRate::Hz2000 => 2000,
-            SampleRate::Hz8000 => 8000,
-            SampleRate::Hz11025 => 11025,
-            SampleRate::Hz22050 => 22050,
-            SampleRate::Hz32000 => 32000,
-            SampleRate::Hz44100 => 44100,
-            SampleRate::Hz48000 => 48000,
-            SampleRate::Hz96000 => 96000,
-            SampleRate::Hz192000 => 192000,
+            SampleRate::Hz2000 => 2_000,
+            SampleRate::Hz8000 => 8_000,
+            SampleRate::Hz11025 => 11_025,
+            SampleRate::Hz22050 => 22_050,
+            SampleRate::Hz32000 => 32_000,
+            SampleRate::Hz44100 => 44_100,
+            SampleRate::Hz48000 => 48_000,
+            SampleRate::Hz96000 => 96_000,
+            SampleRate::Hz192000 => 192_000,
         }
     }
 }
@@ -40,15 +40,15 @@ impl TryFrom<u64> for SampleRate {
 
     fn try_from(value: u64) -> Result<SampleRate, Self::Error> {
         match value {
-            2000 => Ok(SampleRate::Hz2000),
-            8000 => Ok(SampleRate::Hz8000),
-            11025 => Ok(SampleRate::Hz11025),
-            22050 => Ok(SampleRate::Hz22050),
-            32000 => Ok(SampleRate::Hz32000),
-            44100 => Ok(SampleRate::Hz44100),
-            48000 => Ok(SampleRate::Hz48000),
-            96000 => Ok(SampleRate::Hz96000),
-            192000 => Ok(SampleRate::Hz192000),
+            2_000 => Ok(SampleRate::Hz2000),
+            8_000 => Ok(SampleRate::Hz8000),
+            11_025 => Ok(SampleRate::Hz11025),
+            22_050 => Ok(SampleRate::Hz22050),
+            32_000 => Ok(SampleRate::Hz32000),
+            44_100 => Ok(SampleRate::Hz44100),
+            48_000 => Ok(SampleRate::Hz48000),
+            96_000 => Ok(SampleRate::Hz96000),
+            192_000 => Ok(SampleRate::Hz192000),
             value => Err(IntoSampleRateError::InvalidSampleRate(value)),
         }
     }

@@ -91,8 +91,8 @@ impl Codec {
                 unsafe { encoded.set_len(size); }
 
                 for offset in (0..(size as usize)).step_by(4) {
-                    encoded[offset + 0] = sample[offset + 1];
-                    encoded[offset + 1] = sample[offset + 0];
+                    encoded[offset] = sample[offset + 1];
+                    encoded[offset + 1] = sample[offset];
                     encoded[offset + 2] = sample[offset + 3];
                     encoded[offset + 3] = sample[offset + 2];
                 }

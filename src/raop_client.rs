@@ -356,7 +356,7 @@ impl RaopClient {
         trace!("[is_playing] - got status");
         let return_ = status.pause_ts > Frames::new(0) || now_ts < status.head_ts + self.latency();
         trace!("[is_playing] - dropping status");
-        return return_;
+        return_
     }
 
     pub async fn stop(&self) {
@@ -425,7 +425,7 @@ impl RaopClient {
                 // search pause_ts in backlog, it should be backward, not too far
                 n = status.seq_number;
                 i = 0;
-                while i < MAX_BACKLOG && status.backlog[(n % MAX_BACKLOG) as usize].as_ref().map(|e| e.timestamp).unwrap_or(Frames::new(0)) > status.pause_ts {
+                while i < MAX_BACKLOG && status.backlog[(n % MAX_BACKLOG) as usize].as_ref().map(|e| e.timestamp).unwrap_or_else(|| Frames::new(0)) > status.pause_ts {
                     i += 1;
                     n -= 1;
                 }
@@ -541,7 +541,7 @@ impl RaopClient {
         status.backlog[n] = Some(BacklogEntry {
             seq_number: status.seq_number,
             timestamp: status.head_ts,
-            packet: packet,
+            packet,
         });
 
         status.head_ts += self.codec.chunk_length();
@@ -571,7 +571,7 @@ impl RaopClient {
 
     pub async fn set_volume(&self, vol: Volume) -> Result<(), Box<dyn std::error::Error>> {
         *self.volume.lock().await = vol;
-        return self._set_volume().await;
+        self._set_volume().await
     }
 
     pub async fn set_meta_data(&self, meta_data: MetaDataItem) -> Result<(), Box<dyn std::error::Error>> {

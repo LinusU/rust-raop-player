@@ -44,7 +44,7 @@ pub fn create_key_pair(secret: &[u8]) -> ([u8; PRIVATE_KEY_SIZE], [u8; PUBLIC_KE
     unsafe { EVP_PKEY_get_raw_private_key(key, private.as_mut_ptr(), &mut size); }
     assert_eq!(size, SECRET_KEY_SIZE);
 
-    unsafe { EVP_PKEY_get_raw_public_key(key, private.as_mut_ptr().offset(SECRET_KEY_SIZE as isize), &mut size); }
+    unsafe { EVP_PKEY_get_raw_public_key(key, private.as_mut_ptr().add(SECRET_KEY_SIZE), &mut size); }
     assert_eq!(size, PUBLIC_KEY_SIZE);
 
     let mut size = PUBLIC_KEY_SIZE;
@@ -53,7 +53,7 @@ pub fn create_key_pair(secret: &[u8]) -> ([u8; PRIVATE_KEY_SIZE], [u8; PUBLIC_KE
     unsafe { EVP_PKEY_get_raw_public_key(key, public.as_mut_ptr(), &mut size); }
     assert_eq!(size, PUBLIC_KEY_SIZE);
 
-    return (private, public);
+    (private, public)
 }
 
 pub fn calculate_public_key(secret: &[u8]) -> [u8; PUBLIC_KEY_SIZE] {

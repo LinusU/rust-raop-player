@@ -48,7 +48,7 @@ use crate::raop_client::{RaopClient, MAX_SAMPLES_PER_CHUNK};
 use crate::sample_rate::SampleRate;
 use crate::volume::Volume;
 
-const USAGE: &'static str = "
+const USAGE: &str = "
 Usage:
     raop_play [options] <server-ip> <filename>
     raop_play (-h | --help)

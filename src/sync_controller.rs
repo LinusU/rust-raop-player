@@ -71,19 +71,21 @@ async fn receive(mut recv: RecvHalf, send_mutex: Arc<Mutex<SendHalf>>, status_mu
 
         let lost = RtpLostPacket::deserialize(&mut buffer.as_ref());
 
-        {
+        let lost = {
             let mut sane = sane_mutex.lock().await;
 
-            if lost.is_err() {
-                error!("error in received request err:{} (recv:{})", lost.unwrap_err(), n);
-                sane.ctrl += 1;
-                continue;
-            } else {
-                sane.ctrl = 0;
+            match lost {
+                Err(err) => {
+                    error!("error in received request err:{} (recv:{})", err, n);
+                    sane.ctrl += 1;
+                    continue;
+                }
+                Ok(lost) => {
+                    sane.ctrl = 0;
+                    lost
+                }
             }
-        }
-
-        let lost = lost.unwrap();
+        };
 
         let mut missed: i32 = 0;
         if lost.n > 0 {
