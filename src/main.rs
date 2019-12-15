@@ -37,6 +37,7 @@ mod sample_rate;
 mod serialization;
 mod sync_controller;
 mod timing_controller;
+mod volume;
 
 use crate::codec::Codec;
 use crate::crypto::Crypto;
@@ -45,6 +46,7 @@ use crate::meta_data::MetaDataItem;
 use crate::ntp::NtpTime;
 use crate::raop_client::{RaopClient, MAX_SAMPLES_PER_CHUNK};
 use crate::sample_rate::SampleRate;
+use crate::volume::Volume;
 
 const USAGE: &'static str = "
 Usage:
@@ -134,7 +136,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let codec = Codec::new(args.flag_a, MAX_SAMPLES_PER_CHUNK, SampleRate::Hz44100, 16, 2);
     let latency = Frames::new(args.flag_l);
     let crypto = Crypto::new(args.flag_e);
-    let volume = RaopClient::float_volume(args.flag_v);
+    let volume = Volume::from_percent(args.flag_v);
     let mut infile = open_file(args.arg_filename).await?;
 
     let mut raopcl = RaopClient::connect(host, codec, latency, crypto, false, None, None, None, volume, args.arg_server_ip, args.flag_p, true).await?;
