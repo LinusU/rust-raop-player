@@ -211,12 +211,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 unimplemented!();
             }
             Status::Stopped => {
-                raopcl.stop().await;
                 break;
             }
         }
-
-        if !raopcl.is_playing().await { break }
     }
 
     status_logger.stop();

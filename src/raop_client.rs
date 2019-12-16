@@ -344,25 +344,6 @@ impl RaopClient {
         self.codec.sample_rate()
     }
 
-    pub async fn is_playing(&self) -> bool {
-        let now_ts = NtpTime::now().into_timestamp(self.codec.sample_rate());
-        trace!("[is_playing] - aquiring status");
-        let status = self.status.lock().await;
-        trace!("[is_playing] - got status");
-        let return_ = status.pause_ts > Frames::new(0) || now_ts < status.head_ts + self.latency();
-        trace!("[is_playing] - dropping status");
-        return_
-    }
-
-    pub async fn stop(&self) {
-        trace!("[stop] - aquiring status");
-        let mut status = self.status.lock().await;
-        trace!("[stop] - got status");
-        status.state = RaopState::Flushing;
-        status.pause_ts = Frames::new(0);
-        trace!("[stop] - dropping status");
-    }
-
     async fn flush(&self, mut status: &mut Status) -> Result<(), Box<dyn std::error::Error>> {
         let now = NtpTime::now();
         let now_ts = now.into_timestamp(self.codec.sample_rate());
