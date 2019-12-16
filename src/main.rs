@@ -10,10 +10,10 @@ use docopt::Docopt;
 use std::net::Ipv4Addr;
 use std::os::unix::io::FromRawFd;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 // General dependencies
+use beefeater::Beefeater;
 use ctrlc;
 use futures::future::{Abortable, AbortHandle};
 use log::info;
@@ -81,33 +81,6 @@ enum Status {
     Stopped,
     Paused,
     Playing,
-}
-
-impl Status {
-    pub fn into_u8(self) -> u8 {
-        match self {
-            Status::Stopped => 0,
-            Status::Paused => 1,
-            Status::Playing => 2,
-        }
-    }
-
-    pub fn from_u8_unchecked(value: u8) -> Self {
-        match value {
-            0 => Status::Stopped,
-            1 => Status::Paused,
-            2 => Status::Playing,
-            _ => unreachable!(),
-        }
-    }
-
-    pub fn load(from: &AtomicU8) -> Status {
-        Status::from_u8_unchecked(from.load(Ordering::Relaxed))
-    }
-
-    pub fn store(self, into: &AtomicU8) {
-        into.store(self.into_u8(), Ordering::Relaxed)
-    }
 }
 
 struct StatusLogger {
@@ -181,7 +154,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     raopcl.set_meta_data(meta_data).await?;
 
     let start = NtpTime::now();
-    let status = Arc::new(AtomicU8::new(Status::Playing.into_u8()));
+    let status = Arc::new(Beefeater::new(Status::Playing));
 
     let mut buf = [0; MAX_SAMPLES_PER_CHUNK.as_usize(4)];
 
@@ -189,17 +162,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut playtime = Duration::new(0, 0);
 
     {
-        let status_handle = status.clone();
+        let status = status.clone();
         ctrlc::set_handler(move || {
             info!("Recevied SIGINT, stopping playback");
-            Status::Stopped.store(&status_handle);
+            status.store(Status::Stopped);
         })?;
     }
 
     let status_logger = StatusLogger::start(start, Arc::clone(&frames), raopcl.latency(), raopcl.sample_rate());
 
     loop {
-        match Status::load(&status) {
+        match status.load() {
             Status::Playing => {
                 let n = infile.read(&mut buf).await?;
                 if n == 0 { break }
