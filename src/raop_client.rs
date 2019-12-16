@@ -64,7 +64,7 @@ pub fn analyse_setup(setup_headers: Vec<(String, String)>) -> Result<(u16, u16, 
 
 #[derive(PartialEq, PartialOrd)]
 enum RaopState {
-    Flushed,
+    Flushing,
     Streaming,
 }
 
@@ -101,7 +101,6 @@ pub struct Status {
     start_ts: Frames,
     first_ts: Frames,
     first_pkt: bool,
-    flushing: bool,
     pub backlog: [Option<BacklogEntry>; 512usize],
 }
 
@@ -255,14 +254,13 @@ impl RaopClient {
         let rtp_audio_mutex = Arc::new(Mutex::new(rtp_audio));
 
         let status = Status {
-            state: RaopState::Flushed,
+            state: RaopState::Flushing,
             seq_number: random(),
             head_ts: Frames::new(0),
             pause_ts: Frames::new(0),
             start_ts: Frames::new(0),
             first_ts: Frames::new(0),
-            first_pkt: false,
-            flushing: true,
+            first_pkt: true,
             // FIXME: https://github.com/rust-lang/rust/issues/49147
             backlog: [
                 None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
@@ -360,38 +358,29 @@ impl RaopClient {
         trace!("[stop] - aquiring status");
         let mut status = self.status.lock().await;
         trace!("[stop] - got status");
-        status.flushing = true;
+        status.state = RaopState::Flushing;
         status.pause_ts = Frames::new(0);
         trace!("[stop] - dropping status");
     }
 
     async fn flush(&self, mut status: &mut Status) -> Result<(), Box<dyn std::error::Error>> {
-        let mut first_pkt = false;
-
         let now = NtpTime::now();
         let now_ts = now.into_timestamp(self.codec.sample_rate());
 
-        // Not flushed yet, but we have time to wait, so pretend we are full
-        if status.state != RaopState::Flushed && (status.start_ts == Frames::new(0) || status.start_ts > now_ts + self.latency()) {
+        // We are either paused or we shouldn't start until later
+        if status.pause_ts != Frames::new(0) || status.start_ts > now_ts + self.latency() {
             unimplemented!();
         }
 
-        // move to streaming only when really flushed - not when timedout
-        if status.state == RaopState::Flushed {
-            status.first_pkt = true;
-            first_pkt = true;
-            info!("begining to stream hts:{} n:{}", status.head_ts, now);
-            status.state = RaopState::Streaming;
-        }
+        info!("begining to stream hts:{} n:{}", status.head_ts, now);
+        status.state = RaopState::Streaming;
 
         // unpausing ...
         if status.pause_ts == Frames::new(0) {
             status.head_ts = if status.start_ts > Frames::new(0) { status.start_ts } else { now_ts };
             status.first_ts = status.head_ts;
 
-            if first_pkt {
-                self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), self.latency, true).await?;
-            }
+            self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), self.latency, true).await?;
 
             info!("restarting w/o pause n:{}, hts:{}", now, status.head_ts);
         } else {
@@ -405,9 +394,7 @@ impl RaopClient {
             // last head_ts shall be first + raopcl_latency - chunk_length
             status.head_ts = status.first_ts - self.codec.chunk_length();
 
-            if first_pkt {
-                self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), self.latency, true).await?;
-            }
+            self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), self.latency, true).await?;
 
             info!("restarting w/ pause n:{}, hts:{} (re-send: {})", now, status.head_ts, chunks);
 
@@ -457,7 +444,6 @@ impl RaopClient {
 
         status.pause_ts = Frames::new(0);
         status.start_ts = Frames::new(0);
-        status.flushing = false;
 
         Ok(())
     }
@@ -468,7 +454,7 @@ impl RaopClient {
         trace!("[accept_frames] - got status");
 
         // a flushing is pending
-        if status.flushing {
+        if status.state == RaopState::Flushing {
             self.flush(&mut status).await?;
         }
 
@@ -500,19 +486,6 @@ impl RaopClient {
         trace!("[send_chunk] - aquiring status");
         let mut status = self.status.lock().await;
         trace!("[send_chunk] - got status");
-
-        /*
-        Move to streaming state only when really flushed. In most cases, this is
-        done by the raopcl_accept_frames function, except when a player takes too
-        long to flush (JBL OnBeat) and we have to "fake" accepting frames
-        */
-        if status.state == RaopState::Flushed {
-            status.first_pkt = true;
-            info!("begining to stream (LATE) hts:{} n:{}", status.head_ts, now);
-            status.state = RaopState::Streaming;
-
-            self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), self.latency, true).await?;
-        }
 
         let encoded = self.codec.encode_chunk(&sample);
         let encrypted = self.crypto.encrypt(encoded)?;
