@@ -9,11 +9,11 @@ use docopt::Docopt;
 // Standard dependencies
 use std::net::Ipv4Addr;
 use std::os::unix::io::FromRawFd;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 // General dependencies
-use beefeater::Beefeater;
+use beefeater::{AddAssign, Beefeater};
 use ctrlc;
 use futures::future::{Abortable, AbortHandle};
 use log::info;
@@ -88,7 +88,7 @@ struct StatusLogger {
 }
 
 impl StatusLogger {
-    fn start(start: NtpTime, frames: Arc<Mutex<Frames>>, latency: Frames, sample_rate: SampleRate) -> StatusLogger {
+    fn start(start: NtpTime, frames: Arc<Beefeater<Frames>>, latency: Frames, sample_rate: SampleRate) -> StatusLogger {
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
         let future = StatusLogger::run(start, frames, latency, sample_rate);
         let future = Abortable::new(future, abort_registration).map(|_| {});
@@ -100,11 +100,10 @@ impl StatusLogger {
         self.abort_handle.abort();
     }
 
-    async fn run(start: NtpTime, frames: Arc<Mutex<Frames>>, latency: Frames, sample_rate: SampleRate) {
+    async fn run(start: NtpTime, frames: Arc<Beefeater<Frames>>, latency: Frames, sample_rate: SampleRate) {
         loop {
             let now = NtpTime::now();
-
-            let frames = *frames.lock().unwrap();
+            let frames = frames.load();
 
             if frames > latency {
                 info!("at {} ({} ms after start), played {} ms", now, (now - start).as_millis(), ((frames - latency) / sample_rate).as_millis());
@@ -158,7 +157,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut buf = [0; MAX_SAMPLES_PER_CHUNK.as_usize(4)];
 
-    let frames = Arc::new(Mutex::new(Frames::new(0)));
+    let frames = Arc::new(Beefeater::new(Frames::new(0)));
     let mut playtime = Duration::new(0, 0);
 
     {
@@ -178,7 +177,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if n == 0 { break }
                 raopcl.accept_frames().await?;
                 raopcl.send_chunk(&buf[0..n], &mut playtime).await?;
-                *frames.lock().unwrap() += Frames::from_usize(n, 4);
+                frames.add_assign(Frames::from_usize(n, 4));
             }
             Status::Paused => {
                 unimplemented!();
