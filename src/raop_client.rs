@@ -156,7 +156,7 @@ pub struct RaopClient {
 
     status: Arc<Mutex<Status>>,
 
-    volume: Arc<Mutex<Option<Volume>>>,
+    volume: Arc<Beefeater<Option<Volume>>>,
 
     rtsp_client: Arc<Mutex<RTSPClient>>,
 }
@@ -329,7 +329,7 @@ impl RaopClient {
             status: status_mutex,
 
             latency,
-            volume: Arc::new(Mutex::new(None)),
+            volume: Arc::new(Beefeater::new(None)),
 
             rtsp_client: rtsp_client_mutex,
         })
@@ -516,7 +516,7 @@ impl RaopClient {
     }
 
     pub async fn set_volume(&self, vol: Volume) -> Result<(), Box<dyn std::error::Error>> {
-        *self.volume.lock().await = Some(vol);
+        self.volume.store(Some(vol));
 
         let parameter = format!("volume: {}\r\n", vol.into_f32());
         self.rtsp_client.lock().await.set_parameter(&parameter).await?;
