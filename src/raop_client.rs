@@ -65,7 +65,6 @@ pub fn analyse_setup(setup_headers: Vec<(String, String)>) -> Result<(u16, u16, 
 #[derive(PartialEq, PartialOrd)]
 enum RaopState {
     Down,
-    Flushing,
     Flushed,
     Streaming,
 }
@@ -572,7 +571,7 @@ impl RaopClient {
     pub async fn set_volume(&self, vol: Volume) -> Result<(), Box<dyn std::error::Error>> {
         *self.volume.lock().await = Some(vol);
 
-        if self.status.lock().await.state < RaopState::Flushed { return Ok(()); }
+        if self.status.lock().await.state == RaopState::Down { return Ok(()); }
 
         let parameter = format!("volume: {}\r\n", vol.into_f32());
         self.rtsp_client.lock().await.set_parameter(&parameter).await?;
