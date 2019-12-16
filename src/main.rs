@@ -10,6 +10,7 @@ use docopt::Docopt;
 use std::net::Ipv4Addr;
 use std::os::unix::io::FromRawFd;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 // General dependencies
@@ -75,11 +76,38 @@ struct Args {
     flag_v: u8,
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 enum Status {
     Stopped,
     Paused,
     Playing,
+}
+
+impl Status {
+    pub fn into_u8(self) -> u8 {
+        match self {
+            Status::Stopped => 0,
+            Status::Paused => 1,
+            Status::Playing => 2,
+        }
+    }
+
+    pub fn from_u8_unchecked(value: u8) -> Self {
+        match value {
+            0 => Status::Stopped,
+            1 => Status::Paused,
+            2 => Status::Playing,
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn load(from: &AtomicU8) -> Status {
+        Status::from_u8_unchecked(from.load(Ordering::Relaxed))
+    }
+
+    pub fn store(self, into: &AtomicU8) {
+        into.store(self.into_u8(), Ordering::Relaxed)
+    }
 }
 
 struct StatusLogger {
@@ -153,7 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     raopcl.set_meta_data(meta_data).await?;
 
     let start = NtpTime::now();
-    let status = Arc::new(Mutex::new(Status::Playing));
+    let status = Arc::new(AtomicU8::new(Status::Playing.into_u8()));
 
     let mut buf = [0; MAX_SAMPLES_PER_CHUNK.as_usize(4)];
 
@@ -164,24 +192,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let status_handle = status.clone();
         ctrlc::set_handler(move || {
             info!("Recevied SIGINT, stopping playback");
-            *status_handle.lock().unwrap() = Status::Stopped;
+            Status::Stopped.store(&status_handle);
         })?;
     }
 
     let status_logger = StatusLogger::start(start, Arc::clone(&frames), raopcl.latency(), raopcl.sample_rate());
 
     loop {
-        if *status.lock().unwrap() == Status::Playing {
-            let n = infile.read(&mut buf).await?;
-            if n == 0 { break }
-            raopcl.accept_frames().await?;
-            raopcl.send_chunk(&buf[0..n], &mut playtime).await?;
-            *frames.lock().unwrap() += Frames::from_usize(n, 4);
-        }
-
-        if *status.lock().unwrap() == Status::Stopped {
-            raopcl.stop().await;
-            break
+        match Status::load(&status) {
+            Status::Playing => {
+                let n = infile.read(&mut buf).await?;
+                if n == 0 { break }
+                raopcl.accept_frames().await?;
+                raopcl.send_chunk(&buf[0..n], &mut playtime).await?;
+                *frames.lock().unwrap() += Frames::from_usize(n, 4);
+            }
+            Status::Paused => {
+                unimplemented!();
+            }
+            Status::Stopped => {
+                raopcl.stop().await;
+                break;
+            }
         }
 
         if !raopcl.is_playing().await { break }
