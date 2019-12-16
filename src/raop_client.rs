@@ -142,6 +142,7 @@ pub struct RaopClient {
     et: Option<String>,
 
     latency: Frames,
+    ssrc: u32,
 
     // Mutable properties
     keepalive_controller: KeepaliveController,
@@ -151,8 +152,6 @@ pub struct RaopClient {
 
     sane: Arc<Mutex<Sane>>,
     retransmit: Arc<Mutex<u32>>,
-
-    ssrc: Arc<Mutex<u32>>,
 
     status: Arc<Mutex<Status>>,
 
@@ -324,7 +323,7 @@ impl RaopClient {
             sane: sane_mutex,
 
             retransmit: retransmit_mutex,
-            ssrc: Arc::new(Mutex::new(random())),
+            ssrc: random(),
 
             status: status_mutex,
 
@@ -484,7 +483,7 @@ impl RaopClient {
                 seq: status.seq_number,
             },
             timestamp: status.head_ts,
-            ssrc: (*self.ssrc.lock().await as u32),
+            ssrc: self.ssrc,
             data: encrypted,
         };
         status.first_pkt = false;
