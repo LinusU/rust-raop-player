@@ -13,6 +13,7 @@ use crate::timing_controller::TimingController;
 use crate::volume::Volume;
 
 use std::net::{Ipv4Addr, IpAddr};
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -76,6 +77,18 @@ struct MetaDataCapabilities {
     progress: bool,
 }
 
+impl FromStr for MetaDataCapabilities {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(MetaDataCapabilities {
+            text: s.contains('0'),
+            artwork: s.contains('1'),
+            progress: s.contains('2'),
+        })
+    }
+}
+
 pub struct BacklogEntry {
     pub seq_number: u16,
     pub timestamp: Frames,
@@ -104,6 +117,16 @@ pub struct Sane {
     pub ctrl: u64,
     pub time: u64,
     pub audio: SaneAudio,
+}
+
+impl Sane {
+    fn new() -> Sane {
+        Sane {
+            ctrl: 0,
+            time: 0,
+            audio: SaneAudio { avail: 0, select: 0, send: 0 },
+        }
+    }
 }
 
 pub struct RaopClient {
@@ -157,21 +180,12 @@ impl RaopClient {
         // strcpy(raopcld->DACP_id, DACP_id ? DACP_id : "");
         // strcpy(raopcld->active_remote, active_remote ? active_remote : "");
 
-        let meta_data_capabilities = MetaDataCapabilities {
-            text: md.map(|md| md.contains('0')).unwrap_or(false),
-            artwork: md.map(|md| md.contains('1')).unwrap_or(false),
-            progress: md.map(|md| md.contains('2')).unwrap_or(false),
-        };
+        let meta_data_capabilities = md.unwrap_or("").parse::<MetaDataCapabilities>().unwrap();
 
         info!("using {} coding", codec);
 
         let retransmit_mutex = Arc::new(Mutex::new(0));
-
-        let sane_mutex = Arc::new(Mutex::new(Sane {
-            ctrl: 0,
-            time: 0,
-            audio: SaneAudio { avail: 0, select: 0, send: 0 },
-        }));
+        let sane_mutex = Arc::new(Mutex::new(Sane::new()));
 
         let sid = format!("{:010}", random::<u32>());
         let sci = format!("{:016x}", random::<u64>());
