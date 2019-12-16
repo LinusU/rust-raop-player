@@ -173,11 +173,8 @@ impl RaopClient {
             audio: SaneAudio { avail: 0, select: 0, send: 0 },
         }));
 
-        let seed_sid: u32 = random();
-        let seed_sci: u64 = random();
-
-        let sid = format!("{:010}", seed_sid); // sprintf(sid, "%010lu", (long unsigned int) seed.sid);
-        let sci = format!("{:016x}", seed_sci); // sprintf(sci, "%016llx", (long long int) seed.sci);
+        let sid = format!("{:010}", random::<u32>());
+        let sci = format!("{:016x}", random::<u64>());
 
         // RTSP misc setup
         let mut rtsp_client = RTSPClient::connect((remote_addr, rtsp_port), &sid, "iTunes/7.6.2 (Windows; N;)", &[("Client-Instance", &sci)]).await?;
