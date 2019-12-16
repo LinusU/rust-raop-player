@@ -136,13 +136,13 @@ pub struct RaopClient {
 
     status: Arc<Mutex<Status>>,
 
-    volume: Arc<Mutex<Volume>>,
+    volume: Arc<Mutex<Option<Volume>>>,
 
     rtsp_client: Arc<Mutex<RTSPClient>>,
 }
 
 impl RaopClient {
-    pub async fn connect(local_addr_ipv4: Ipv4Addr, codec: Codec, desired_latency: Frames, crypto: Crypto, auth: bool, secret: Option<&str>, et: Option<&str>, md: Option<&str>, volume: Volume, remote_addr_ipv4: Ipv4Addr, rtsp_port: u16, set_volume: bool) -> Result<RaopClient, Box<dyn std::error::Error>> {
+    pub async fn connect(local_addr_ipv4: Ipv4Addr, codec: Codec, desired_latency: Frames, crypto: Crypto, auth: bool, secret: Option<&str>, et: Option<&str>, md: Option<&str>, remote_addr_ipv4: Ipv4Addr, rtsp_port: u16) -> Result<RaopClient, Box<dyn std::error::Error>> {
         if codec.chunk_length() > MAX_SAMPLES_PER_CHUNK {
             panic!("Chunk length must below {}", MAX_SAMPLES_PER_CHUNK);
         }
@@ -299,7 +299,7 @@ impl RaopClient {
         let rtsp_client_mutex = Arc::new(Mutex::new(rtsp_client));
         let keepalive_controller = KeepaliveController::start(Arc::clone(&rtsp_client_mutex));
 
-        let client = RaopClient {
+        Ok(RaopClient {
             // Immutable properties
             remote_addr,
             local_addr,
@@ -325,16 +325,10 @@ impl RaopClient {
             status: status_mutex,
 
             latency,
-            volume: Arc::new(Mutex::new(volume)),
+            volume: Arc::new(Mutex::new(None)),
 
             rtsp_client: rtsp_client_mutex,
-        };
-
-        if set_volume {
-            client._set_volume().await?;
-        }
-
-        Ok(client)
+        })
     }
 
     pub fn latency(&self) -> Frames {
@@ -561,18 +555,15 @@ impl RaopClient {
         Ok(())
     }
 
-    async fn _set_volume(&self) -> Result<(), Box<dyn std::error::Error>> {
-        if (*self.status.lock().await).state < RaopState::Flushed { return Ok(()); }
+    pub async fn set_volume(&self, vol: Volume) -> Result<(), Box<dyn std::error::Error>> {
+        *self.volume.lock().await = Some(vol);
 
-        let parameter = format!("volume: {}\r\n", self.volume.lock().await.into_f32());
-        (*self.rtsp_client.lock().await).set_parameter(&parameter).await?;
+        if self.status.lock().await.state < RaopState::Flushed { return Ok(()); }
+
+        let parameter = format!("volume: {}\r\n", vol.into_f32());
+        self.rtsp_client.lock().await.set_parameter(&parameter).await?;
 
         Ok(())
-    }
-
-    pub async fn set_volume(&self, vol: Volume) -> Result<(), Box<dyn std::error::Error>> {
-        *self.volume.lock().await = vol;
-        self._set_volume().await
     }
 
     pub async fn set_meta_data(&self, meta_data: MetaDataItem) -> Result<(), Box<dyn std::error::Error>> {

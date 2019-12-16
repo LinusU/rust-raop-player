@@ -139,7 +139,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let volume = Volume::from_percent(args.flag_v);
     let mut infile = open_file(args.arg_filename).await?;
 
-    let mut raopcl = RaopClient::connect(host, codec, latency, crypto, false, None, None, None, volume, args.arg_server_ip, args.flag_p, true).await?;
+    let mut raopcl = RaopClient::connect(host, codec, latency, crypto, false, None, None, None, args.arg_server_ip, args.flag_p).await?;
+    raopcl.set_volume(volume).await?;
 
     let latency = raopcl.latency();
 
