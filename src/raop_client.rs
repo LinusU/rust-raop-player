@@ -64,7 +64,6 @@ pub fn analyse_setup(setup_headers: Vec<(String, String)>) -> Result<(u16, u16, 
 
 #[derive(PartialEq, PartialOrd)]
 enum RaopState {
-    Down,
     Flushed,
     Streaming,
 }
@@ -256,7 +255,7 @@ impl RaopClient {
         let rtp_audio_mutex = Arc::new(Mutex::new(rtp_audio));
 
         let status = Status {
-            state: RaopState::Down,
+            state: RaopState::Flushed,
             seq_number: random(),
             head_ts: Frames::new(0),
             pause_ts: Frames::new(0),
@@ -302,12 +301,6 @@ impl RaopClient {
 
             SyncController::start(rtp_ctrl, status_ref, sane_ref, retransmit_ref, latency, sample_rate)
         };
-
-        {
-            // as connect might take time, state might already have been set
-            let mut status = status_mutex.lock().await;
-            if status.state == RaopState::Down { status.state = RaopState::Flushed; }
-        }
 
         let rtsp_client_mutex = Arc::new(Mutex::new(rtsp_client));
         let keepalive_controller = KeepaliveController::start(Arc::clone(&rtsp_client_mutex));
@@ -571,8 +564,6 @@ impl RaopClient {
     pub async fn set_volume(&self, vol: Volume) -> Result<(), Box<dyn std::error::Error>> {
         *self.volume.lock().await = Some(vol);
 
-        if self.status.lock().await.state == RaopState::Down { return Ok(()); }
-
         let parameter = format!("volume: {}\r\n", vol.into_f32());
         self.rtsp_client.lock().await.set_parameter(&parameter).await?;
 
@@ -585,8 +576,7 @@ impl RaopClient {
     }
 
     pub async fn teardown(mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let mut status = self.status.lock().await;
-        status.state = RaopState::Down;
+        let status = self.status.lock().await;
 
         self.keepalive_controller.stop();
         self.sync_controller.stop();
