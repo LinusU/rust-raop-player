@@ -368,115 +368,119 @@ impl RaopClient {
         trace!("[stop] - dropping status");
     }
 
-    pub async fn accept_frames(&self) -> Result<(), Box<dyn std::error::Error>> {
+    async fn flush(&self, mut status: &mut Status) -> Result<(), Box<dyn std::error::Error>> {
         let mut first_pkt = false;
-        let mut now_ts: Frames;
 
+        let now = NtpTime::now();
+        let now_ts = now.into_timestamp(self.codec.sample_rate());
+
+        // Not flushed yet, but we have time to wait, so pretend we are full
+        if status.state != RaopState::Flushed && (status.start_ts == Frames::new(0) || status.start_ts > now_ts + self.latency()) {
+            unimplemented!();
+        }
+
+        // move to streaming only when really flushed - not when timedout
+        if status.state == RaopState::Flushed {
+            status.first_pkt = true;
+            first_pkt = true;
+            info!("begining to stream hts:{} n:{}", status.head_ts, now);
+            status.state = RaopState::Streaming;
+        }
+
+        // unpausing ...
+        if status.pause_ts == Frames::new(0) {
+            status.head_ts = if status.start_ts > Frames::new(0) { status.start_ts } else { now_ts };
+            status.first_ts = status.head_ts;
+
+            if first_pkt {
+                self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), self.latency, true).await?;
+            }
+
+            info!("restarting w/o pause n:{}, hts:{}", now, status.head_ts);
+        } else {
+            let mut n: u16;
+            let mut i: u16;
+            let chunks = (u64::from(self.latency()) / u64::from(self.codec.chunk_length())) as u16;
+
+            // if un-pausing w/o start_time, can anticipate as we have buffer
+            status.first_ts = if status.start_ts > Frames::new(0) { status.start_ts } else { now_ts - self.latency() };
+
+            // last head_ts shall be first + raopcl_latency - chunk_length
+            status.head_ts = status.first_ts - self.codec.chunk_length();
+
+            if first_pkt {
+                self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), self.latency, true).await?;
+            }
+
+            info!("restarting w/ pause n:{}, hts:{} (re-send: {})", now, status.head_ts, chunks);
+
+            // search pause_ts in backlog, it should be backward, not too far
+            n = status.seq_number;
+            i = 0;
+            while i < MAX_BACKLOG && status.backlog[(n % MAX_BACKLOG) as usize].as_ref().map(|e| e.timestamp).unwrap_or_else(|| Frames::new(0)) > status.pause_ts {
+                i += 1;
+                n -= 1;
+            }
+
+            // the resend shall go up to (including) pause_ts
+            n = (n - chunks + 1) % MAX_BACKLOG;
+
+            // re-send old packets
+            i = 0;
+            while i < chunks {
+                let index = ((n + i) % MAX_BACKLOG) as usize;
+
+                if let Some(mut entry) = status.backlog[index].take() {
+                    status.seq_number += 1;
+
+                    entry.packet.header.type_ = if status.first_pkt { 0xE0 } else { 0x60 };
+                    entry.packet.header.seq = status.seq_number;
+                    entry.packet.timestamp = status.head_ts;
+                    status.first_pkt = false;
+
+                    self._send_audio(&mut status, &entry.packet).await?;
+
+                    // then replace packets in backlog in case
+                    let reindex = (status.seq_number % MAX_BACKLOG) as usize;
+
+                    status.backlog[reindex] = Some(BacklogEntry {
+                        seq_number: status.seq_number,
+                        timestamp: status.head_ts,
+                        packet: entry.packet,
+                    });
+
+                    status.head_ts += self.codec.chunk_length();
+
+                    i += 1;
+                }
+            }
+
+            debug!("finished resend {}", i);
+        }
+
+        status.pause_ts = Frames::new(0);
+        status.start_ts = Frames::new(0);
+        status.flushing = false;
+
+        Ok(())
+    }
+
+    pub async fn accept_frames(&self) -> Result<(), Box<dyn std::error::Error>> {
         trace!("[accept_frames] - aquiring status");
         let mut status = self.status.lock().await;
         trace!("[accept_frames] - got status");
 
         // a flushing is pending
         if status.flushing {
-            let now = NtpTime::now();
-
-            now_ts = now.into_timestamp(self.codec.sample_rate());
-
-            // Not flushed yet, but we have time to wait, so pretend we are full
-            if status.state != RaopState::Flushed && (status.start_ts == Frames::new(0) || status.start_ts > now_ts + self.latency()) {
-                unimplemented!();
-            }
-
-            // move to streaming only when really flushed - not when timedout
-            if status.state == RaopState::Flushed {
-                status.first_pkt = true;
-                first_pkt = true;
-                info!("begining to stream hts:{} n:{}", status.head_ts, now);
-                status.state = RaopState::Streaming;
-            }
-
-            // unpausing ...
-            if status.pause_ts == Frames::new(0) {
-                status.head_ts = if status.start_ts > Frames::new(0) { status.start_ts } else { now_ts };
-                status.first_ts = status.head_ts;
-
-                if first_pkt {
-                    self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), self.latency, true).await?;
-                }
-
-                info!("restarting w/o pause n:{}, hts:{}", now, status.head_ts);
-            } else {
-                let mut n: u16;
-                let mut i: u16;
-                let chunks = (u64::from(self.latency()) / u64::from(self.codec.chunk_length())) as u16;
-
-                // if un-pausing w/o start_time, can anticipate as we have buffer
-                status.first_ts = if status.start_ts > Frames::new(0) { status.start_ts } else { now_ts - self.latency() };
-
-                // last head_ts shall be first + raopcl_latency - chunk_length
-                status.head_ts = status.first_ts - self.codec.chunk_length();
-
-                if first_pkt {
-                    self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), self.latency, true).await?;
-                }
-
-                info!("restarting w/ pause n:{}, hts:{} (re-send: {})", now, status.head_ts, chunks);
-
-                // search pause_ts in backlog, it should be backward, not too far
-                n = status.seq_number;
-                i = 0;
-                while i < MAX_BACKLOG && status.backlog[(n % MAX_BACKLOG) as usize].as_ref().map(|e| e.timestamp).unwrap_or_else(|| Frames::new(0)) > status.pause_ts {
-                    i += 1;
-                    n -= 1;
-                }
-
-                // the resend shall go up to (including) pause_ts
-                n = (n - chunks + 1) % MAX_BACKLOG;
-
-                // re-send old packets
-                i = 0;
-                while i < chunks {
-                    let index = ((n + i) % MAX_BACKLOG) as usize;
-
-                    if let Some(mut entry) = status.backlog[index].take() {
-                        status.seq_number += 1;
-
-                        entry.packet.header.type_ = if status.first_pkt { 0xE0 } else { 0x60 };
-                        entry.packet.header.seq = status.seq_number;
-                        entry.packet.timestamp = status.head_ts;
-                        status.first_pkt = false;
-
-                        self._send_audio(&mut status, &entry.packet).await?;
-
-                        // then replace packets in backlog in case
-                        let reindex = (status.seq_number % MAX_BACKLOG) as usize;
-
-                        status.backlog[reindex] = Some(BacklogEntry {
-                            seq_number: status.seq_number,
-                            timestamp: status.head_ts,
-                            packet: entry.packet,
-                        });
-
-                        status.head_ts += self.codec.chunk_length();
-
-                        i += 1;
-                    }
-                }
-
-                debug!("finished resend {}", i);
-            }
-
-            status.pause_ts = Frames::new(0);
-            status.start_ts = Frames::new(0);
-            status.flushing = false;
+            self.flush(&mut status).await?;
         }
 
         // when paused, fix "now" at the time when it was paused.
-        if status.pause_ts > Frames::new(0) {
-            now_ts = status.pause_ts;
+        let now_ts = if status.pause_ts > Frames::new(0) {
+            status.pause_ts
         } else {
-            now_ts = NtpTime::now().into_timestamp(self.codec.sample_rate());
-        }
+            NtpTime::now().into_timestamp(self.codec.sample_rate())
+        };
 
         let chunk_length = self.codec.chunk_length();
         let head_ts = status.head_ts;
