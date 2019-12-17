@@ -7,7 +7,7 @@ extern crate serde_derive;
 use docopt::Docopt;
 
 // Standard dependencies
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, SocketAddr};
 use std::os::unix::io::FromRawFd;
 use std::sync::Arc;
 use std::time::Duration;
@@ -66,7 +66,7 @@ Options:
 
 #[derive(Deserialize)]
 struct Args {
-    arg_server_ip: Ipv4Addr,
+    arg_server_ip: IpAddr,
     arg_filename: String,
     flag_a: bool,
     flag_d: usize,
@@ -132,14 +132,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     stderrlog::new().verbosity(args.flag_d).timestamp(stderrlog::Timestamp::Microsecond).color(stderrlog::ColorChoice::Never).init()?;
 
-    let host = Ipv4Addr::UNSPECIFIED;
     let codec = Codec::new(args.flag_a, MAX_SAMPLES_PER_CHUNK, SampleRate::Hz44100, 16, 2);
     let latency = Frames::new(args.flag_l);
     let crypto = Crypto::new(args.flag_e);
     let volume = Volume::from_percent(args.flag_v);
+    let remote = SocketAddr::new(args.arg_server_ip, args.flag_p);
     let mut infile = open_file(args.arg_filename).await?;
 
-    let mut raopcl = RaopClient::connect(host, codec, latency, crypto, false, None, None, None, args.arg_server_ip, args.flag_p).await?;
+    let mut raopcl = RaopClient::connect(codec, latency, crypto, false, None, None, None, remote).await?;
     raopcl.set_volume(volume).await?;
 
     let latency = raopcl.latency();
