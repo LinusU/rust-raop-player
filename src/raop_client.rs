@@ -136,10 +136,6 @@ fn format_ip_for_sdp(ip: IpAddr) -> String {
 
 pub struct RaopClient {
     // Immutable properties
-    remote_ip: IpAddr,
-    local_ip: IpAddr,
-    rtsp_port: u16,
-
     auth: bool,
 
     codec: Codec,
@@ -311,9 +307,6 @@ impl RaopClient {
 
         Ok(RaopClient {
             // Immutable properties
-            remote_ip: remote.ip(),
-            local_ip,
-            rtsp_port: remote.port(),
             auth,
             codec,
             crypto,
