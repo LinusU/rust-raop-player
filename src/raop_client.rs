@@ -12,7 +12,7 @@ use crate::sync_controller::SyncController;
 use crate::timing_controller::TimingController;
 use crate::volume::Volume;
 
-use std::net::{Ipv4Addr, IpAddr};
+use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -127,12 +127,15 @@ impl Sane {
     }
 }
 
+fn format_ip_for_sdp(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(ip) => format!("IN IP4 {}", ip.to_string()),
+        IpAddr::V6(ip) => format!("IN IP6 {}", ip.to_string()),
+    }
+}
+
 pub struct RaopClient {
     // Immutable properties
-    remote_addr: IpAddr,
-    local_addr: IpAddr,
-    rtsp_port: u16,
-
     auth: bool,
 
     codec: Codec,
@@ -162,13 +165,10 @@ pub struct RaopClient {
 }
 
 impl RaopClient {
-    pub async fn connect(local_addr_ipv4: Ipv4Addr, codec: Codec, desired_latency: Frames, crypto: Crypto, auth: bool, secret: Option<&str>, et: Option<&str>, md: Option<&str>, remote_addr_ipv4: Ipv4Addr, rtsp_port: u16) -> Result<RaopClient, Box<dyn std::error::Error>> {
+    pub async fn connect(codec: Codec, desired_latency: Frames, crypto: Crypto, auth: bool, secret: Option<&str>, et: Option<&str>, md: Option<&str>, remote: SocketAddr) -> Result<RaopClient, Box<dyn std::error::Error>> {
         if codec.chunk_length() > MAX_SAMPLES_PER_CHUNK {
             panic!("Chunk length must below {}", MAX_SAMPLES_PER_CHUNK);
         }
-
-        let local_addr: IpAddr = local_addr_ipv4.into();
-        let remote_addr: IpAddr = remote_addr_ipv4.into();
 
         let secret = secret.map(|s| s.to_owned());
         let et = et.map(|s| s.to_owned());
@@ -188,7 +188,7 @@ impl RaopClient {
         let sci = format!("{:016x}", random::<u64>());
 
         // RTSP misc setup
-        let mut rtsp_client = RTSPClient::connect((remote_addr, rtsp_port), &sid, "iTunes/7.6.2 (Windows; N;)", &[("Client-Instance", &sci)]).await?;
+        let mut rtsp_client = RTSPClient::connect(remote, &sid, "iTunes/7.6.2 (Windows; N;)", &[("Client-Instance", &sci)]).await?;
         // FIXME:
         // if self.DACP_id[0] != 0 { rtspcl_add_eself.((*s_elient..cnew("DACP-ID").unwrap().into_raw(), self.DACP_id); }
         // if self.active_remote[0] != 0 { rtspclself.esel.f_ient((.s_elient.new("Active-Remote").unwrap().into_raw(), self.active_remote)?;
@@ -205,18 +205,20 @@ impl RaopClient {
             rtsp_client.auth_setup().await?;
         }
 
+        let local_ip = rtsp_client.local_ip()?;
+
         let mut sdp = format!(
-            "v=0\r\no=iTunes {} 0 IN IP4 {}\r\ns=iTunes\r\nc=IN IP4 {}\r\nt=0 0\r\n",
+            "v=0\r\no=iTunes {} 0 {}\r\ns=iTunes\r\nc={}\r\nt=0 0\r\n",
             sid,
-            rtsp_client.local_ip()?,
-            remote_addr,
+            format_ip_for_sdp(local_ip),
+            format_ip_for_sdp(remote.ip()),
         );
 
         sdp.push_str(codec.sdp().as_str());
         sdp.push_str(crypto.sdp().as_str());
 
         // AppleTV expects now the timing port ot be opened BEFORE the setup message
-        let rtp_time = UdpSocket::bind((local_addr, 0)).await?;
+        let rtp_time = UdpSocket::bind((local_ip, 0)).await?;
         let local_time_port = rtp_time.local_addr()?.port();
         let timing_controller = TimingController::start(rtp_time);
 
@@ -234,10 +236,10 @@ impl RaopClient {
         }
 
         // open RTP sockets, need local ports here before sending SETUP
-        let rtp_ctrl = UdpSocket::bind((local_addr, 0)).await?;
+        let rtp_ctrl = UdpSocket::bind((local_ip, 0)).await?;
         let local_ctrl_port = rtp_ctrl.local_addr()?.port();
 
-        let rtp_audio = UdpSocket::bind((local_addr, 0)).await?;
+        let rtp_audio = UdpSocket::bind((local_ip, 0)).await?;
         let local_audio_port = rtp_audio.local_addr()?.port();
 
         // RTSP SETUP : get all RTP destination ports
@@ -248,8 +250,8 @@ impl RaopClient {
         debug!("opened timing socket  l:{:05} r:{}", local_time_port, remote_time_port);
         debug!("opened control socket l:{:05} r:{}", local_ctrl_port, remote_ctrl_port);
 
-        rtp_audio.connect((remote_addr, remote_audio_port)).await?;
-        rtp_ctrl.connect((remote_addr, remote_ctrl_port)).await?;
+        rtp_audio.connect((remote.ip(), remote_audio_port)).await?;
+        rtp_ctrl.connect((remote.ip(), remote_ctrl_port)).await?;
 
         let rtp_audio_mutex = Arc::new(Mutex::new(rtp_audio));
 
@@ -305,9 +307,6 @@ impl RaopClient {
 
         Ok(RaopClient {
             // Immutable properties
-            remote_addr,
-            local_addr,
-            rtsp_port,
             auth,
             codec,
             crypto,

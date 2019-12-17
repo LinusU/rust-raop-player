@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::net::IpAddr;
 use std::str::from_utf8;
 
 use hex::FromHex;
@@ -202,8 +203,8 @@ impl RTSPClient {
         self.headers.retain(|header| header.0 != key);
     }
 
-    pub fn local_ip(&self) -> Result<String, Box<dyn std::error::Error>> {
-        Ok(self.socket.get_ref().local_addr()?.ip().to_string())
+    pub fn local_ip(&self) -> Result<IpAddr, Box<dyn std::error::Error>> {
+        Ok(self.socket.get_ref().local_addr()?.ip())
     }
 
     #[allow(clippy::write_with_newline)]
