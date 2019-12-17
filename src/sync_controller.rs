@@ -7,6 +7,7 @@ use crate::serialization::{Deserializable, Serializable};
 use std::sync::Arc;
 use std::time::Duration;
 
+use beefeater::{AddAssign, Beefeater};
 use futures::future::{Abortable, AbortHandle, join};
 use futures::prelude::*;
 use tokio::net::udp::{RecvHalf, SendHalf};
@@ -22,13 +23,13 @@ pub struct SyncController {
 }
 
 impl SyncController {
-    pub fn start(socket: UdpSocket, status_mutex: Arc<Mutex<Status>>, sane_mutex: Arc<Mutex<Sane>>, retransmit_mutex: Arc<Mutex<u32>>, latency: Frames, sample_rate: SampleRate) -> SyncController {
+    pub fn start(socket: UdpSocket, status_mutex: Arc<Mutex<Status>>, sane_mutex: Arc<Mutex<Sane>>, retransmit: Arc<Beefeater<u32>>, latency: Frames, sample_rate: SampleRate) -> SyncController {
         let (recv, send) = socket.split();
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
 
         let send_mutex = Arc::new(Mutex::new(send));
 
-        let receiving = receive(recv, Arc::clone(&send_mutex), Arc::clone(&status_mutex), sane_mutex, retransmit_mutex);
+        let receiving = receive(recv, Arc::clone(&send_mutex), Arc::clone(&status_mutex), sane_mutex, retransmit);
         let sending = send_sync_every_second(Arc::clone(&send_mutex), status_mutex, latency, sample_rate);
 
         let pair = join(receiving.map(|result| { result.unwrap(); }), sending.map(|result| { result.unwrap(); }));
@@ -62,7 +63,7 @@ async fn send_sync_paket(mutex: Arc<Mutex<SendHalf>>, rsp: RtpSyncPacket) -> Res
     Ok(())
 }
 
-async fn receive(mut recv: RecvHalf, send_mutex: Arc<Mutex<SendHalf>>, status_mutex: Arc<Mutex<Status>>, sane_mutex: Arc<Mutex<Sane>>, retransmit_mutex: Arc<Mutex<u32>>) -> Result<(), std::io::Error> {
+async fn receive(mut recv: RecvHalf, send_mutex: Arc<Mutex<SendHalf>>, status_mutex: Arc<Mutex<Status>>, sane_mutex: Arc<Mutex<Sane>>, retransmit: Arc<Beefeater<u32>>) -> Result<(), std::io::Error> {
     // Reuse this memory for receiving packet
     let mut buffer = [0u8; RtpLostPacket::SIZE];
 
@@ -96,7 +97,7 @@ async fn receive(mut recv: RecvHalf, send_mutex: Arc<Mutex<SendHalf>>, status_mu
 
                 if status.backlog[index].as_ref().map(|e| e.seq_number).unwrap_or(0) == lost.seq_number + i {
                     if let Some(ref entry) = status.backlog[index] {
-                        *retransmit_mutex.lock().await += 1;
+                        retransmit.add_assign(1);
                         {
                             let mut send = send_mutex.lock().await;
                             send.send(&RtpAudioRetransmissionPacket::wrap(&entry.packet).as_bytes()).await.unwrap();

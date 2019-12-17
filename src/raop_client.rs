@@ -17,6 +17,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use beefeater::Beefeater;
 use rand::random;
 use log::{error, info, debug, trace};
 use tokio::net::UdpSocket;
@@ -142,6 +143,7 @@ pub struct RaopClient {
     et: Option<String>,
 
     latency: Frames,
+    ssrc: u32,
 
     // Mutable properties
     keepalive_controller: KeepaliveController,
@@ -150,13 +152,11 @@ pub struct RaopClient {
     timing_controller: TimingController,
 
     sane: Arc<Mutex<Sane>>,
-    retransmit: Arc<Mutex<u32>>,
-
-    ssrc: Arc<Mutex<u32>>,
+    retransmit: Arc<Beefeater<u32>>,
 
     status: Arc<Mutex<Status>>,
 
-    volume: Arc<Mutex<Option<Volume>>>,
+    volume: Arc<Beefeater<Option<Volume>>>,
 
     rtsp_client: Arc<Mutex<RTSPClient>>,
 }
@@ -181,7 +181,7 @@ impl RaopClient {
 
         info!("using {} coding", codec);
 
-        let retransmit_mutex = Arc::new(Mutex::new(0));
+        let retransmit = Arc::new(Beefeater::new(0));
         let sane_mutex = Arc::new(Mutex::new(Sane::new()));
 
         let sid = format!("{:010}", random::<u32>());
@@ -294,10 +294,10 @@ impl RaopClient {
         let sync_controller = {
             let status_ref = Arc::clone(&status_mutex);
             let sane_ref = Arc::clone(&sane_mutex);
-            let retransmit_ref = Arc::clone(&retransmit_mutex);
+            let retransmit = Arc::clone(&retransmit);
             let sample_rate = codec.sample_rate();
 
-            SyncController::start(rtp_ctrl, status_ref, sane_ref, retransmit_ref, latency, sample_rate)
+            SyncController::start(rtp_ctrl, status_ref, sane_ref, retransmit, latency, sample_rate)
         };
 
         let rtsp_client_mutex = Arc::new(Mutex::new(rtsp_client));
@@ -323,13 +323,13 @@ impl RaopClient {
 
             sane: sane_mutex,
 
-            retransmit: retransmit_mutex,
-            ssrc: Arc::new(Mutex::new(random())),
+            retransmit,
+            ssrc: random(),
 
             status: status_mutex,
 
             latency,
-            volume: Arc::new(Mutex::new(None)),
+            volume: Arc::new(Beefeater::new(None)),
 
             rtsp_client: rtsp_client_mutex,
         })
@@ -484,7 +484,7 @@ impl RaopClient {
                 seq: status.seq_number,
             },
             timestamp: status.head_ts,
-            ssrc: (*self.ssrc.lock().await as u32),
+            ssrc: self.ssrc,
             data: encrypted,
         };
         status.first_pkt = false;
@@ -504,7 +504,7 @@ impl RaopClient {
         // Print extra info every ten seconds
         if playtime.as_secs() % 10 == 0 && playtime.subsec_millis() < 8 {
             let sane = self.sane.lock().await;
-            let retransmit = *self.retransmit.lock().await;
+            let retransmit = self.retransmit.load();
             info!("check n:{} p:{} ts:{} sn:{} retr:{} avail:{} send:{} select:{}",
                 now.millis(), playtime.as_secs_f32(), status.head_ts, status.seq_number,
                 retransmit, sane.audio.avail, sane.audio.send, sane.audio.select);
@@ -516,7 +516,7 @@ impl RaopClient {
     }
 
     pub async fn set_volume(&self, vol: Volume) -> Result<(), Box<dyn std::error::Error>> {
-        *self.volume.lock().await = Some(vol);
+        self.volume.store(Some(vol));
 
         let parameter = format!("volume: {}\r\n", vol.into_f32());
         self.rtsp_client.lock().await.set_parameter(&parameter).await?;

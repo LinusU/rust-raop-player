@@ -9,11 +9,11 @@ use docopt::Docopt;
 // Standard dependencies
 use std::net::Ipv4Addr;
 use std::os::unix::io::FromRawFd;
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 // General dependencies
+use beefeater::{AddAssign, Beefeater};
 use ctrlc;
 use futures::future::{Abortable, AbortHandle};
 use log::info;
@@ -83,39 +83,12 @@ enum Status {
     Playing,
 }
 
-impl Status {
-    pub fn into_u8(self) -> u8 {
-        match self {
-            Status::Stopped => 0,
-            Status::Paused => 1,
-            Status::Playing => 2,
-        }
-    }
-
-    pub fn from_u8_unchecked(value: u8) -> Self {
-        match value {
-            0 => Status::Stopped,
-            1 => Status::Paused,
-            2 => Status::Playing,
-            _ => unreachable!(),
-        }
-    }
-
-    pub fn load(from: &AtomicU8) -> Status {
-        Status::from_u8_unchecked(from.load(Ordering::Relaxed))
-    }
-
-    pub fn store(self, into: &AtomicU8) {
-        into.store(self.into_u8(), Ordering::Relaxed)
-    }
-}
-
 struct StatusLogger {
     abort_handle: AbortHandle,
 }
 
 impl StatusLogger {
-    fn start(start: NtpTime, frames: Arc<Mutex<Frames>>, latency: Frames, sample_rate: SampleRate) -> StatusLogger {
+    fn start(start: NtpTime, frames: Arc<Beefeater<Frames>>, latency: Frames, sample_rate: SampleRate) -> StatusLogger {
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
         let future = StatusLogger::run(start, frames, latency, sample_rate);
         let future = Abortable::new(future, abort_registration).map(|_| {});
@@ -127,11 +100,10 @@ impl StatusLogger {
         self.abort_handle.abort();
     }
 
-    async fn run(start: NtpTime, frames: Arc<Mutex<Frames>>, latency: Frames, sample_rate: SampleRate) {
+    async fn run(start: NtpTime, frames: Arc<Beefeater<Frames>>, latency: Frames, sample_rate: SampleRate) {
         loop {
             let now = NtpTime::now();
-
-            let frames = *frames.lock().unwrap();
+            let frames = frames.load();
 
             if frames > latency {
                 info!("at {} ({} ms after start), played {} ms", now, (now - start).as_millis(), ((frames - latency) / sample_rate).as_millis());
@@ -181,31 +153,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     raopcl.set_meta_data(meta_data).await?;
 
     let start = NtpTime::now();
-    let status = Arc::new(AtomicU8::new(Status::Playing.into_u8()));
+    let status = Arc::new(Beefeater::new(Status::Playing));
 
     let mut buf = [0; MAX_SAMPLES_PER_CHUNK.as_usize(4)];
 
-    let frames = Arc::new(Mutex::new(Frames::new(0)));
+    let frames = Arc::new(Beefeater::new(Frames::new(0)));
     let mut playtime = Duration::new(0, 0);
 
     {
-        let status_handle = status.clone();
+        let status = status.clone();
         ctrlc::set_handler(move || {
             info!("Recevied SIGINT, stopping playback");
-            Status::Stopped.store(&status_handle);
+            status.store(Status::Stopped);
         })?;
     }
 
     let status_logger = StatusLogger::start(start, Arc::clone(&frames), raopcl.latency(), raopcl.sample_rate());
 
     loop {
-        match Status::load(&status) {
+        match status.load() {
             Status::Playing => {
                 let n = infile.read(&mut buf).await?;
                 if n == 0 { break }
                 raopcl.accept_frames().await?;
                 raopcl.send_chunk(&buf[0..n], &mut playtime).await?;
-                *frames.lock().unwrap() += Frames::from_usize(n, 4);
+                frames.add_assign(Frames::from_usize(n, 4));
             }
             Status::Paused => {
                 unimplemented!();
