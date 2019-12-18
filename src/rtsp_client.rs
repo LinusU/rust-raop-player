@@ -1,9 +1,9 @@
 use std::io::Write;
 use std::net::IpAddr;
-use std::str::from_utf8;
+use std::string::FromUtf8Error;
 
 use hex::FromHex;
-use log::{error, info, debug};
+use log::{error, debug};
 use openssl::sha::Sha512;
 use openssl::symm::{Cipher, Mode, Crypter};
 use rand::random;
@@ -20,6 +20,89 @@ enum Body<'a> {
     Text { content_type: &'a str, content: &'a str },
     Blob { content_type: &'a str, content: &'a [u8] },
     None,
+}
+
+struct RequestBuilder(Vec<u8>);
+
+#[allow(clippy::write_with_newline)]
+impl RequestBuilder {
+    fn new(cmd: &str, url: &str) -> RequestBuilder {
+        let mut req = Vec::new();
+        write!(&mut req, "{} {} RTSP/1.0\r\n", cmd, url).unwrap();
+        debug!("----> {} {} RTSP/1.0", cmd, url);
+        RequestBuilder(req)
+    }
+
+    fn header(&mut self, name: &str, value: &str) {
+        write!(&mut self.0, "{}: {}\r\n", name, value).unwrap();
+        debug!("----> {}: {}", name, value);
+    }
+
+    fn body(mut self, value: Body) -> Vec<u8> {
+        write!(&mut self.0, "\r\n").unwrap();
+        debug!("----> ");
+
+        match value {
+            Body::Text { ref content, .. } => {
+                write!(&mut self.0, "{}", content).unwrap();
+                for line in content.lines() {
+                    debug!("----> {}", line);
+                }
+            }
+
+            Body::Blob { ref content, .. } => {
+                self.0.extend_from_slice(content);
+                debug!("----> ({} bytes binary data)", content.len());
+            }
+
+            Body::None => {},
+        }
+
+        self.0
+    }
+}
+
+type Response = (Vec<(String, String)>, String);
+
+struct ResponseBuilder {
+    headers: Vec<(String, String)>,
+    content_length: usize,
+}
+
+impl ResponseBuilder {
+    fn new(status_line: &str) -> ResponseBuilder {
+        debug!("<---- {}", status_line.trim());
+
+        if status_line.split_whitespace().nth(1) != Some("200") {
+            panic!("request failed");
+        }
+
+        ResponseBuilder { headers: Vec::new(), content_length: 0 }
+    }
+
+    fn header(&mut self, line: &str) {
+        debug!("<---- {}", line.trim());
+
+        let mut parts = line.splitn(2, ':').map(|part| part.trim());
+        let key = parts.next().unwrap().to_owned();
+        let value = parts.next().unwrap().to_owned();
+
+        if key.to_lowercase() == "content-length" {
+            self.content_length = value.parse().unwrap();
+        }
+
+        self.headers.push((key, value));
+    }
+
+    fn body(self, data: Vec<u8>) -> Result<Response, FromUtf8Error> {
+        let content = String::from_utf8(data)?;
+
+        for line in content.lines() {
+            debug!("<---- {}", line);
+        }
+
+        Ok((self.headers, content))
+    }
 }
 
 pub struct RTSPClient {
@@ -151,7 +234,7 @@ impl RTSPClient {
 
         if let Some(session) = session {
             self.session = Some(session.to_owned());
-            debug!("<------- : session:{}", session);
+            debug!("got session from remote: {}", session);
         } else {
             error!("no session in response");
             panic!("no session in response");
@@ -208,104 +291,62 @@ impl RTSPClient {
     }
 
     #[allow(clippy::write_with_newline)]
-    async fn exec_request(&mut self, cmd: &str, body: Body<'_>, headers: Vec<(&str, &str)>, url: Option<&str>) -> Result<(Vec<(String, String)>, String), Box<dyn std::error::Error>> {
-        let mut req = Vec::new();
-
+    async fn exec_request(&mut self, cmd: &str, body: Body<'_>, headers: Vec<(&str, &str)>, url: Option<&str>) -> Result<Response, Box<dyn std::error::Error>> {
         let url = url.unwrap_or_else(|| self.url.as_str());
-
-        write!(&mut req, "{} {} RTSP/1.0\r\n", cmd, url)?;
+        let mut req = RequestBuilder::new(cmd, url);
 
         for (key, value) in &headers {
-            write!(&mut req, "{}: {}\r\n", key, value)?;
+            req.header(key, value);
         }
 
         if let Body::Text { ref content_type, ref content } = body {
-            write!(&mut req, "Content-Type: {}\r\n", content_type)?;
-            write!(&mut req, "Content-Length: {}\r\n", content.len())?;
+            req.header("Content-Type", content_type);
+            req.header("Content-Length", &content.len().to_string());
         }
 
         if let Body::Blob { ref content_type, ref content } = body {
-            write!(&mut req, "Content-Type: {}\r\n", content_type)?;
-            write!(&mut req, "Content-Length: {}\r\n", content.len())?;
+            req.header("Content-Type", content_type);
+            req.header("Content-Length", &content.len().to_string());
         }
 
         self.cseq += 1;
-        write!(&mut req, "CSeq: {}\r\n", self.cseq)?;
-        write!(&mut req, "User-Agent: {}\r\n", self.user_agent)?;
+        req.header("CSeq", &self.cseq.to_string());
+        req.header("User-Agent", &self.user_agent);
 
         for (key, value) in &self.headers {
-            write!(&mut req, "{}: {}\r\n", key, value)?;
+            req.header(key, value);
         }
 
         if let Some(ref session) = self.session {
-            write!(&mut req, "Session: {}\r\n", session)?;
+            req.header("Session", session);
         }
 
-        write!(&mut req, "\r\n")?;
-
-        if let Body::Text { ref content, .. } = body {
-            write!(&mut req, "{}", content)?;
-        }
-
-        if let Body::Blob { ref content, .. } = body {
-            req.extend_from_slice(content);
-        }
+        let req = req.body(body);
 
         self.socket.get_mut().write_all(&req).await?;
 
-        match body {
-            Body::Text { .. } => debug!("----> : write {}", from_utf8(&req).unwrap()),
-            Body::Blob { .. } => debug!("----> : send binary request"),
-            Body::None => debug!("----> : write {}", from_utf8(&req).unwrap()),
-        }
-
-        {
+        let mut response = {
             let mut line = String::new();
             self.socket.read_line(&mut line).await?;
-
-            let status = line.splitn(3, ' ').nth(1).unwrap();
-
-            if status != "200" {
-                error!("<------ : request failed, error {}", line);
-                panic!("request failed");
-            } else {
-                debug!("<------ : {}: request ok", status);
-            }
-        }
-
-        let mut response_headers: Vec<(String, String)> = vec!();
-        let mut response_content_length: usize = 0;
+            ResponseBuilder::new(&line)
+        };
 
         loop {
             let mut line = String::new();
             self.socket.read_line(&mut line).await?;
 
             if line.trim() == "" { break; }
-
-            debug!("<------ : {}", line);
-
-            let mut parts = line.splitn(2, ':').map(|part| part.trim());
-            let key = parts.next().unwrap().to_owned();
-            let value = parts.next().unwrap().to_owned();
-
-            if key.to_lowercase() == "content-length" {
-                response_content_length = value.parse().unwrap();
-            }
-
-            response_headers.push((key, value));
+            response.header(&line);
         }
 
-        if response_content_length == 0 {
-            return Ok((response_headers, String::new()));
+        if response.content_length == 0 {
+            return Ok((response.headers, String::new()));
         }
 
-        let mut data = vec![0u8; response_content_length];
+        let mut data = vec![0u8; response.content_length];
         self.socket.read_exact(&mut data).await?;
+        let response = response.body(data)?;
 
-        let response_content = String::from_utf8(data)?;
-
-        info!("Body data {}, {}", response_content_length, response_content);
-
-        Ok((response_headers, response_content))
+        Ok(response)
     }
 }
