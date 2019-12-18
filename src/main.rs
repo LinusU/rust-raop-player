@@ -61,7 +61,7 @@ Options:
     -h, --help    Print this help and exit
     -l LATENCY    Latency in frames [default: 44100]
     -p PORT       Specify remote port [default: 5000]
-    -v VOLUME     Specify volume between 0 and 100 [default: 50]
+    -v VOLUME     Specify volume between 0 and 100
 ";
 
 #[derive(Deserialize)]
@@ -73,7 +73,7 @@ struct Args {
     flag_e: bool,
     flag_l: u64,
     flag_p: u16,
-    flag_v: u8,
+    flag_v: Option<u8>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -135,12 +135,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let codec = Codec::new(args.flag_a, MAX_SAMPLES_PER_CHUNK, SampleRate::Hz44100, 16, 2);
     let latency = Frames::new(args.flag_l);
     let crypto = Crypto::new(args.flag_e);
-    let volume = Volume::from_percent(args.flag_v);
     let remote = SocketAddr::new(args.arg_server_ip, args.flag_p);
     let mut infile = open_file(args.arg_filename).await?;
 
     let mut raopcl = RaopClient::connect(codec, latency, crypto, false, None, None, None, remote).await?;
-    raopcl.set_volume(volume).await?;
+
+    if let Some(volume) = args.flag_v {
+        raopcl.set_volume(Volume::from_percent(volume)).await?;
+    }
 
     let latency = raopcl.latency();
 
