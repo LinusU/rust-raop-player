@@ -8,7 +8,7 @@ use futures::prelude::*;
 use tokio::sync::Mutex;
 use tokio::time::delay_for;
 
-use log::{info};
+use log::{info, warn};
 
 pub struct KeepaliveController {
     abort_handle: Option<AbortHandle>,
@@ -39,6 +39,19 @@ async fn run(rtsp_client: Arc<Mutex<RTSPClient>>) -> Result<(), Box<dyn std::err
 
         let mut client = rtsp_client.lock().await;
         info!("sending keepalive packet");
-        client.options(vec![]).await?;
+
+        for tries in 1.. {
+            if tries == 3 {
+                client.options(vec![]).await?;
+                break;
+            }
+
+            if client.options(vec![]).await.is_ok() {
+                break;
+            }
+
+            warn!("failed to send keepalive packet, retrying in 1 second...");
+            delay_for(Duration::from_secs(1)).await;
+        }
     }
 }
