@@ -35,7 +35,7 @@ impl KeepaliveController {
 
 async fn run(rtsp_client: Arc<Mutex<RTSPClient>>) -> Result<(), Box<dyn std::error::Error>> {
     loop {
-        delay_for(Duration::from_secs(30)).await;
+        delay_for(Duration::from_secs(5)).await;
 
         let mut client = rtsp_client.lock().await;
         info!("sending keepalive packet");
