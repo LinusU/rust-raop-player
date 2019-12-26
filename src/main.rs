@@ -32,6 +32,7 @@ mod keepalive_controller;
 mod meta_data;
 mod ntp;
 mod raop_client;
+mod raop_params;
 mod rtp;
 mod rtsp_client;
 mod sample_rate;
@@ -46,6 +47,7 @@ use crate::frames::Frames;
 use crate::meta_data::MetaDataItem;
 use crate::ntp::NtpTime;
 use crate::raop_client::{RaopClient, MAX_SAMPLES_PER_CHUNK};
+use crate::raop_params::RaopParams;
 use crate::sample_rate::SampleRate;
 use crate::volume::Volume;
 
@@ -132,13 +134,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     stderrlog::new().verbosity(args.flag_d).timestamp(stderrlog::Timestamp::Microsecond).color(stderrlog::ColorChoice::Never).init()?;
 
-    let codec = Codec::new(args.flag_a, MAX_SAMPLES_PER_CHUNK, SampleRate::Hz44100, 16, 2);
-    let latency = Frames::new(args.flag_l);
-    let crypto = Crypto::new(args.flag_e);
+    let mut params = RaopParams::new();
+
+    params.set_codec(Codec::new(args.flag_a, MAX_SAMPLES_PER_CHUNK, SampleRate::Hz44100, 16, 2));
+    params.set_desired_latency(Frames::new(args.flag_l));
+    params.set_crypto(Crypto::new(args.flag_e));
+
     let remote = SocketAddr::new(args.arg_server_ip, args.flag_p);
     let mut infile = open_file(args.arg_filename).await?;
 
-    let mut raopcl = RaopClient::connect(codec, latency, crypto, false, None, None, None, remote).await?;
+    let mut raopcl = RaopClient::connect(params, remote).await?;
 
     if let Some(volume) = args.flag_v {
         raopcl.set_volume(Volume::from_percent(volume)).await?;

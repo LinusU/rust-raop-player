@@ -4,6 +4,7 @@ use crate::frames::Frames;
 use crate::keepalive_controller::KeepaliveController;
 use crate::meta_data::MetaDataItem;
 use crate::ntp::NtpTime;
+use crate::raop_params::RaopParams;
 use crate::rtp::{RtpHeader, RtpAudioPacket};
 use crate::rtsp_client::RTSPClient;
 use crate::sample_rate::SampleRate;
@@ -165,21 +166,19 @@ pub struct RaopClient {
 }
 
 impl RaopClient {
-    pub async fn connect(codec: Codec, desired_latency: Frames, crypto: Crypto, auth: bool, secret: Option<&str>, et: Option<&str>, md: Option<&str>, remote: SocketAddr) -> Result<RaopClient, Box<dyn std::error::Error>> {
-        if codec.chunk_length() > MAX_SAMPLES_PER_CHUNK {
+    pub async fn connect(params: RaopParams, remote: SocketAddr) -> Result<RaopClient, Box<dyn std::error::Error>> {
+        if params.codec.chunk_length() > MAX_SAMPLES_PER_CHUNK {
             panic!("Chunk length must below {}", MAX_SAMPLES_PER_CHUNK);
         }
 
-        let secret = secret.map(|s| s.to_owned());
-        let et = et.map(|s| s.to_owned());
-        let mut latency = std::cmp::max(desired_latency, LATENCY_MIN);
+        let mut latency = std::cmp::max(params.desired_latency, LATENCY_MIN);
 
         // strcpy(raopcld->DACP_id, DACP_id ? DACP_id : "");
         // strcpy(raopcld->active_remote, active_remote ? active_remote : "");
 
-        let meta_data_capabilities = md.unwrap_or("").parse::<MetaDataCapabilities>().unwrap();
+        let meta_data_capabilities = params.md.as_ref().map_or("", String::as_str).parse::<MetaDataCapabilities>().unwrap();
 
-        info!("using {} coding", codec);
+        info!("using {} coding", params.codec);
 
         let retransmit = Arc::new(Beefeater::new(0));
         let sane_mutex = Arc::new(Mutex::new(Sane::new()));
@@ -196,12 +195,12 @@ impl RaopClient {
         info!("local interface {}", rtsp_client.local_ip()?);
 
         // RTSP pairing verify for AppleTV
-        if let Some(ref secret) = secret {
+        if let Some(ref secret) = params.secret {
             rtsp_client.pair_verify(secret).await?;
         }
 
         // Send pubkey for MFi devices
-        if et.as_ref().map(|et| et.contains('4')).unwrap_or(false) {
+        if params.et.as_ref().map(|et| et.contains('4')).unwrap_or(false) {
             rtsp_client.auth_setup().await?;
         }
 
@@ -214,8 +213,8 @@ impl RaopClient {
             format_ip_for_sdp(remote.ip()),
         );
 
-        sdp.push_str(codec.sdp().as_str());
-        sdp.push_str(crypto.sdp().as_str());
+        sdp.push_str(params.codec.sdp().as_str());
+        sdp.push_str(params.crypto.sdp().as_str());
 
         // AppleTV expects now the timing port ot be opened BEFORE the setup message
         let rtp_time = UdpSocket::bind((local_ip, 0)).await?;
@@ -223,7 +222,7 @@ impl RaopClient {
         let timing_controller = TimingController::start(rtp_time);
 
         // RTSP ANNOUNCE
-        if auth && !crypto.is_clear() {
+        if params.auth && !params.crypto.is_clear() {
             panic!("Not implemented");
             // let seed_sac: [u8; 16] = random();
             // base64_encode(&seed.sac, 16, &sac);
@@ -284,7 +283,7 @@ impl RaopClient {
             ],
         };
 
-        let record_headers = rtsp_client.record(status.seq_number + 1, NtpTime::now().into_timestamp(codec.sample_rate())).await?;
+        let record_headers = rtsp_client.record(status.seq_number + 1, NtpTime::now().into_timestamp(params.codec.sample_rate())).await?;
         let returned_latency = record_headers.iter().find(|header| header.0.to_lowercase() == "audio-latency").map(|header| header.1.as_str());
 
         if let Some(returned_latency) = returned_latency {
@@ -297,7 +296,7 @@ impl RaopClient {
             let status_ref = Arc::clone(&status_mutex);
             let sane_ref = Arc::clone(&sane_mutex);
             let retransmit = Arc::clone(&retransmit);
-            let sample_rate = codec.sample_rate();
+            let sample_rate = params.codec.sample_rate();
 
             SyncController::start(rtp_ctrl, status_ref, sane_ref, retransmit, latency, sample_rate)
         };
@@ -307,12 +306,12 @@ impl RaopClient {
 
         Ok(RaopClient {
             // Immutable properties
-            auth,
-            codec,
-            crypto,
+            auth: params.auth,
+            codec: params.codec,
+            crypto: params.crypto,
             meta_data_capabilities,
-            secret,
-            et,
+            secret: params.secret,
+            et: params.et,
 
             // Mutable properties
             keepalive_controller,
