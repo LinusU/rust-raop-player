@@ -1,6 +1,5 @@
 use std::io::Write;
 use std::net::IpAddr;
-use std::string::FromUtf8Error;
 
 use hex::FromHex;
 use log::{error, debug};
@@ -15,6 +14,12 @@ use crate::curve25519;
 use crate::frames::Frames;
 use crate::meta_data::MetaDataItem;
 use crate::serialization::Serializable;
+
+mod error;
+mod response;
+
+pub use self::error::RtspError;
+use self::response::{Response, ResponseBuilder};
 
 enum Body<'a> {
     Text { content_type: &'a str, content: &'a str },
@@ -62,49 +67,6 @@ impl RequestBuilder {
     }
 }
 
-type Response = (Vec<(String, String)>, String);
-
-struct ResponseBuilder {
-    headers: Vec<(String, String)>,
-    content_length: usize,
-}
-
-impl ResponseBuilder {
-    fn new(status_line: &str) -> ResponseBuilder {
-        debug!("<---- {}", status_line.trim());
-
-        if status_line.split_whitespace().nth(1) != Some("200") {
-            panic!("request failed");
-        }
-
-        ResponseBuilder { headers: Vec::new(), content_length: 0 }
-    }
-
-    fn header(&mut self, line: &str) {
-        debug!("<---- {}", line.trim());
-
-        let mut parts = line.splitn(2, ':').map(|part| part.trim());
-        let key = parts.next().unwrap().to_owned();
-        let value = parts.next().unwrap().to_owned();
-
-        if key.to_lowercase() == "content-length" {
-            self.content_length = value.parse().unwrap();
-        }
-
-        self.headers.push((key, value));
-    }
-
-    fn body(self, data: Vec<u8>) -> Result<Response, FromUtf8Error> {
-        let content = String::from_utf8(data)?;
-
-        for line in content.lines() {
-            debug!("<---- {}", line);
-        }
-
-        Ok((self.headers, content))
-    }
-}
-
 pub struct RTSPClient {
     socket: BufReader<TcpStream>,
     url: String,
@@ -134,11 +96,11 @@ impl RTSPClient {
     // bool rtspcl_is_connected(struct rtspcl_s *p);
     // bool rtspcl_is_sane(struct rtspcl_s *p);
 
-    pub async fn options(&mut self, headers: Vec<(&str, &str)>) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn options(&mut self, headers: Vec<(&str, &str)>) -> Result<(), RtspError> {
         self.exec_request("OPTIONS", Body::None, headers, Some("*")).await.map(|_| ())
     }
 
-    pub async fn pair_verify(&mut self, secret_hex: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn pair_verify(&mut self, secret_hex: &str) -> Result<(), RtspError> {
         // retrieve authentication keys from secret
         let secret = <[u8; curve25519::SECRET_KEY_SIZE]>::from_hex(secret_hex)?;
         let (auth_priv, auth_pub) = curve25519::create_key_pair(&secret);
@@ -210,7 +172,7 @@ impl RTSPClient {
             .map(|_| ())
     }
 
-    pub async fn auth_setup(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn auth_setup(&mut self) -> Result<(), RtspError> {
         let secret: [u8; curve25519::SECRET_KEY_SIZE] = random();
         let pub_key = curve25519::calculate_public_key(&secret);
 
@@ -223,7 +185,7 @@ impl RTSPClient {
             .map(|_| ())
     }
 
-    pub async fn announce_sdp(&mut self, sdp: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn announce_sdp(&mut self, sdp: &str) -> Result<(), RtspError> {
         self.exec_request("ANNOUNCE", Body::Text { content_type: "application/sdp", content: sdp }, vec!(), None).await.map(|_| ())
     }
 
@@ -243,7 +205,7 @@ impl RTSPClient {
         Ok(headers)
     }
 
-    pub async fn record(&mut self, start_seq: u16, start_ts: Frames) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
+    pub async fn record(&mut self, start_seq: u16, start_ts: Frames) -> Result<Vec<(String, String)>, RtspError> {
         if self.session.is_none() {
             error!("no session in progress");
             panic!("no session in progress");
@@ -255,23 +217,23 @@ impl RTSPClient {
         self.exec_request("RECORD", Body::None, headers, None).await.map(|result| result.0)
     }
 
-    pub async fn set_parameter(&mut self, param: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn set_parameter(&mut self, param: &str) -> Result<(), RtspError> {
         self.exec_request("SET_PARAMETER", Body::Text { content_type: "text/parameters", content: param }, vec!(), None).await.map(|_| ())
     }
 
-    pub async fn set_meta_data(&mut self, timestamp: Frames, meta_data: MetaDataItem) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn set_meta_data(&mut self, timestamp: Frames, meta_data: MetaDataItem) -> Result<(), RtspError> {
         let rtptime = format!("rtptime={}", timestamp);
         let body = Body::Blob { content_type: "application/x-dmap-tagged", content: &meta_data.as_bytes() };
 
         self.exec_request("SET_PARAMETER", body, vec![("RTP-Info", &rtptime)], None).await.map(|_| ())
     }
 
-    pub async fn flush(&mut self, seq_number: u16, timestamp: Frames) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn flush(&mut self, seq_number: u16, timestamp: Frames) -> Result<(), RtspError> {
         let info = format!("seq={};rtptime={}", seq_number, timestamp);
         self.exec_request("FLUSH", Body::None, vec!(("RTP-Info", &info)), None).await.map(|_| ())
     }
 
-    pub async fn teardown(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn teardown(&mut self) -> Result<(), RtspError> {
         self.exec_request("TEARDOWN", Body::None, vec!(), None).await.map(|_| ())
     }
 
@@ -290,7 +252,7 @@ impl RTSPClient {
         Ok(self.socket.get_ref().local_addr()?.ip())
     }
 
-    async fn exec_request(&mut self, cmd: &str, body: Body<'_>, headers: Vec<(&str, &str)>, url: Option<&str>) -> Result<Response, Box<dyn std::error::Error>> {
+    async fn exec_request(&mut self, cmd: &str, body: Body<'_>, headers: Vec<(&str, &str)>, url: Option<&str>) -> Result<Response, RtspError> {
         let url = url.unwrap_or_else(|| self.url.as_str());
         let mut req = RequestBuilder::new(cmd, url);
 
@@ -327,7 +289,7 @@ impl RTSPClient {
         let mut response = {
             let mut line = String::new();
             self.socket.read_line(&mut line).await?;
-            ResponseBuilder::new(&line)
+            ResponseBuilder::new(&line)?
         };
 
         loop {
@@ -335,17 +297,11 @@ impl RTSPClient {
             self.socket.read_line(&mut line).await?;
 
             if line.trim() == "" { break; }
-            response.header(&line);
+            response.header(&line)?;
         }
 
-        if response.content_length == 0 {
-            return Ok((response.headers, String::new()));
-        }
-
-        let mut data = vec![0u8; response.content_length];
-        self.socket.read_exact(&mut data).await?;
-        let response = response.body(data)?;
-
-        Ok(response)
+        let mut data = vec![0u8; response.content_length()];
+        if !data.is_empty() { self.socket.read_exact(&mut data).await?; }
+        Ok(response.body(data)?)
     }
 }
