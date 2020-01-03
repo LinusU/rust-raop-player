@@ -16,7 +16,7 @@ use std::time::Duration;
 use beefeater::{AddAssign, Beefeater};
 use ctrlc;
 use futures::future::{Abortable, AbortHandle};
-use log::info;
+use log::{info, warn};
 use stderrlog;
 use tokio::fs::File;
 use futures::FutureExt;
@@ -157,7 +157,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         MetaDataItem::item_kind(2),
     ]);
 
-    raopcl.set_meta_data(meta_data).await?;
+    if let Err(err) = raopcl.set_meta_data(meta_data).await {
+        warn!("Failed to set meta data: {}", err);
+    }
 
     let start = NtpTime::now();
     let status = Arc::new(Beefeater::new(Status::Playing));
