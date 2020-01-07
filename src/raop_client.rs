@@ -524,7 +524,8 @@ impl RaopClient {
 
     pub async fn set_meta_data(&self, meta_data: MetaDataItem) -> Result<(), Box<dyn std::error::Error>> {
         let ts = (*self.status.lock().await).head_ts;
-        (*self.rtsp_client.lock().await).set_meta_data(ts, meta_data).await
+        (*self.rtsp_client.lock().await).set_meta_data(ts, meta_data).await?;
+        Ok(())
     }
 
     pub async fn teardown(mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -536,7 +537,9 @@ impl RaopClient {
 
         let mut rtsp_client = self.rtsp_client.lock().await;
         rtsp_client.flush(status.seq_number + 1, status.head_ts + Frames::new(1)).await?;
-        rtsp_client.teardown().await
+        rtsp_client.teardown().await?;
+
+        Ok(())
     }
 
     async fn _send_audio(&self, status: &mut Status, packet: &RtpAudioPacket) -> Result<bool, Box<dyn std::error::Error>> {

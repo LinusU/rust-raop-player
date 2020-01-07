@@ -55,7 +55,7 @@ impl Codec {
         match self {
             Codec::ALAC(ref encoder, _) => {
                 format!(
-                    "m=audio 0 RTP/AVP 96\r\na=rtpmap:96 AppleLossless\r\na=fmtp:96 {}d 0 {} 40 10 14 {} 255 0 0 {}\r\n",
+                    "m=audio 0 RTP/AVP 96\r\na=rtpmap:96 AppleLossless\r\na=fmtp:96 {} 0 {} 40 10 14 {} 255 0 0 {}\r\n",
                     encoder.frames(),
                     encoder.bit_depth(),
                     encoder.channels(),
