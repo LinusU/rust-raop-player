@@ -69,10 +69,19 @@ impl ResponseBuilder {
     }
 
     pub fn body(self, data: Vec<u8>) -> Result<Response, RtspError> {
-        let content = String::from_utf8(data)?;
+        let content_type = self.headers.iter().find(|header| header.0.to_lowercase() == "content-type").map(|header| header.1.as_str());
 
-        for line in content.lines() {
-            debug!("<---- {}", line);
+        let content = String::from("");
+        if let Some(content_type) = content_type {
+            if content_type == "application/octet-stream" {
+                debug!("<---- binary data");
+            } else {
+                let content = String::from_utf8(data)?;
+
+                for line in content.lines() {
+                    debug!("<---- {}", line);
+                }
+            }
         }
 
         match self.status {

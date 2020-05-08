@@ -44,4 +44,12 @@ impl RaopParams {
     pub fn set_desired_latency(&mut self, desired_latency: Frames) {
         self.desired_latency = desired_latency;
     }
+
+    pub fn set_et(&mut self, et: String) {
+        self.et = Option::from(et);
+    }
+
+    pub fn set_md(&mut self, md: String) {
+        self.md = Option::from(md);
+    }
 }

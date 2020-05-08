@@ -27,4 +27,6 @@ Options:
     -l LATENCY    Latency in frames [default: 44100]
     -p PORT       Specify remote port [default: 5000]
     -v VOLUME     Specify volume between 0 and 100 [default: 50]
+    -t ET         et-field in mDNS - used to detect MFi
+    -m MD         md in mDNS: metadata capabilties 0=text, 1=artwork, 2=progress
 ```
