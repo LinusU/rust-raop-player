@@ -23,7 +23,7 @@ use rand::random;
 use log::{error, info, debug, trace};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
-use tokio::time::delay_for;
+use tokio::time::sleep;
 
 const LATENCY_MIN: Frames = Frames::new(11025);
 
@@ -453,7 +453,7 @@ impl RaopClient {
         if now_ts < head_ts + chunk_length {
             let sleep_frames = (head_ts + chunk_length) - now_ts;
             let sleep_duration = sleep_frames / self.codec.sample_rate();
-            delay_for(sleep_duration).await;
+            sleep(sleep_duration).await;
         }
 
         Ok(())
@@ -554,9 +554,10 @@ impl RaopClient {
         // FIXME: if self.rtp_ports.audio.fd == -1  { return Ok(false); }
         if status.state != RaopState::Streaming { return Ok(false); }
 
-        let mut socket = self.rtp_audio.lock().await;
-        let n = socket.send(&packet.as_bytes()).await.unwrap();
-        drop(socket);
+        let n = {
+            let socket = self.rtp_audio.lock().await;
+            socket.send(&packet.as_bytes()).await.unwrap()
+        };
 
         let mut ret = true;
 

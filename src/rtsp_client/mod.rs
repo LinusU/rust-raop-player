@@ -6,9 +6,8 @@ use log::{error, debug};
 use openssl::sha::Sha512;
 use openssl::symm::{Cipher, Mode, Crypter};
 use rand::random;
-use tokio::io::BufReader;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, ToSocketAddrs};
-use tokio::prelude::*;
 
 use crate::curve25519;
 use crate::frames::Frames;

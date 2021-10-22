@@ -7,7 +7,7 @@ use std::time::Duration;
 use futures::future::{Abortable, AbortHandle};
 use futures::prelude::*;
 use tokio::net::UdpSocket;
-use tokio::time::delay_for;
+use tokio::time::sleep;
 
 use log::{error, debug};
 
@@ -34,7 +34,7 @@ impl TimingController {
     }
 }
 
-async fn run(mut socket: UdpSocket) -> Result<(), Box<dyn std::error::Error>> {
+async fn run(socket: UdpSocket) -> Result<(), Box<dyn std::error::Error>> {
     // FIXME: `connected` should come from the UdpSocket
     let mut connected = false;
 
@@ -77,7 +77,7 @@ async fn run(mut socket: UdpSocket) -> Result<(), Box<dyn std::error::Error>> {
 
         if n == 0 {
             error!("read, disconnected on the other end");
-            delay_for(Duration::from_millis(100)).await;
+            sleep(Duration::from_millis(100)).await;
         }
     }
 }

@@ -16,12 +16,12 @@ use std::time::Duration;
 use beefeater::{AddAssign, Beefeater};
 use ctrlc;
 use futures::future::{Abortable, AbortHandle};
+use futures::FutureExt;
 use log::{info, warn};
 use stderrlog;
 use tokio::fs::File;
-use futures::FutureExt;
-use tokio::prelude::*;
-use tokio::time::delay_for;
+use tokio::io::AsyncReadExt;
+use tokio::time::sleep;
 
 // Local dependencies
 mod codec;
@@ -111,12 +111,12 @@ impl StatusLogger {
                 info!("at {} ({} ms after start), played {} ms", now, (now - start).as_millis(), ((frames - latency) / sample_rate).as_millis());
             }
 
-            delay_for(Duration::from_secs(1)).await;
+            sleep(Duration::from_secs(1)).await;
         }
     }
 }
 
-async fn open_file(name: String) -> io::Result<File> {
+async fn open_file(name: String) -> std::io::Result<File> {
     if name == "-" {
         // FIXME: Using tokio::io::stdin results in glitched audio
         // This is safe because this is the only thing accessing stdin
@@ -126,7 +126,7 @@ async fn open_file(name: String) -> io::Result<File> {
     }
 }
 
-#[tokio::main(basic_scheduler)]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Args = Docopt::new(USAGE)
         .and_then(|d| d.deserialize())

@@ -6,7 +6,7 @@ use std::time::Duration;
 use futures::future::{Abortable, AbortHandle};
 use futures::prelude::*;
 use tokio::sync::Mutex;
-use tokio::time::delay_for;
+use tokio::time::sleep;
 
 use log::{info};
 
@@ -35,7 +35,7 @@ impl KeepaliveController {
 
 async fn run(rtsp_client: Arc<Mutex<RTSPClient>>) -> Result<(), Box<dyn std::error::Error>> {
     loop {
-        delay_for(Duration::from_secs(5)).await;
+        sleep(Duration::from_secs(5)).await;
 
         let mut client = rtsp_client.lock().await;
         info!("sending keepalive packet");
