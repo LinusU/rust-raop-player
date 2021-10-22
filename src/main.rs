@@ -17,7 +17,7 @@ use beefeater::{AddAssign, Beefeater};
 use ctrlc;
 use futures::future::{Abortable, AbortHandle};
 use futures::FutureExt;
-use log::{info, warn};
+use log::{debug, info, warn};
 use stderrlog;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
@@ -108,7 +108,7 @@ impl StatusLogger {
             let frames = frames.load();
 
             if frames > latency {
-                info!("at {} ({} ms after start), played {} ms", now, (now - start).as_millis(), ((frames - latency) / sample_rate).as_millis());
+                debug!("at {} ({} ms after start), played {} ms", now, (now - start).as_millis(), ((frames - latency) / sample_rate).as_millis());
             }
 
             sleep(Duration::from_secs(1)).await;

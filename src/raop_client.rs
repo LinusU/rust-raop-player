@@ -503,7 +503,7 @@ impl RaopClient {
         if playtime.as_secs() % 10 == 0 && playtime.subsec_millis() < 8 {
             let sane = self.sane.lock().await;
             let retransmit = self.retransmit.load();
-            info!("check n:{} p:{} ts:{} sn:{} retr:{} avail:{} send:{} select:{}",
+            debug!("check n:{} p:{} ts:{} sn:{} retr:{} avail:{} send:{} select:{}",
                 now.millis(), playtime.as_secs_f32(), status.head_ts, status.seq_number,
                 retransmit, sane.audio.avail, sane.audio.send, sane.audio.select);
         }

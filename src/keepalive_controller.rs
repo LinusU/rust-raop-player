@@ -8,7 +8,7 @@ use futures::prelude::*;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 
-use log::{info};
+use log::debug;
 
 pub struct KeepaliveController {
     abort_handle: Option<AbortHandle>,
@@ -38,7 +38,7 @@ async fn run(rtsp_client: Arc<Mutex<RTSPClient>>) -> Result<(), Box<dyn std::err
         sleep(Duration::from_secs(5)).await;
 
         let mut client = rtsp_client.lock().await;
-        info!("sending keepalive packet");
+        debug!("sending keepalive packet");
         client.options(vec![]).await?;
     }
 }
