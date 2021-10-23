@@ -138,7 +138,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = [0; MAX_SAMPLES_PER_CHUNK.as_usize(4)];
 
     let frames = Arc::new(Beefeater::new(Frames::new(0)));
-    let mut playtime = Duration::new(0, 0);
 
     {
         let status = status.clone();
@@ -156,7 +155,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let n = infile.read(&mut buf).await?;
                 if n == 0 { break }
                 raopcl.accept_frames().await?;
-                raopcl.send_chunk(&buf[0..n], &mut playtime).await?;
+                raopcl.send_chunk(&buf[0..n]).await?;
                 frames.add_assign(Frames::from_usize(n, 4));
             }
             Status::Stopped => {

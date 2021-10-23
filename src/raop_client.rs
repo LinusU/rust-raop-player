@@ -16,7 +16,6 @@ use crate::volume::Volume;
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
 
 use beefeater::Beefeater;
 use rand::random;
@@ -459,7 +458,7 @@ impl RaopClient {
         Ok(())
     }
 
-    pub async fn send_chunk(&mut self, sample: &[u8], playtime: &mut Duration) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn send_chunk(&mut self, sample: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         let now = NtpTime::now();
 
         trace!("[send_chunk] - aquiring status");
@@ -469,7 +468,7 @@ impl RaopClient {
         let encoded = self.codec.encode_chunk(&sample);
         let encrypted = self.crypto.encrypt(encoded)?;
 
-        *playtime = (status.head_ts + self.latency()) / self.codec.sample_rate();
+        let playtime = (status.head_ts + self.latency()) / self.codec.sample_rate();
 
         trace!("sending audio ts:{} (pt:{} now:{}) ", status.head_ts, playtime.as_secs_f32(), NtpTime::now());
 
