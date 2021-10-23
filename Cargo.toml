@@ -2,10 +2,11 @@
 name = "raop_play"
 version = "0.0.0"
 authors = ["Linus Unnebäck <linus@folkdatorn.se>"]
-edition = "2018"
+edition = "2021"
+rust-version = "1.56"
 
 [dependencies]
-alac-encoder = "^0.1.1"
+alac-encoder = "^0.2.0"
 base64 = "^0.13.0"
 beefeater = "^0.1.1"
 byteorder = "^1.3.1"
