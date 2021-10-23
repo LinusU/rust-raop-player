@@ -1,6 +1,3 @@
-// FIXME: eventually remove these
-#![allow(dead_code)]
-
 // Docopt
 #[macro_use]
 extern crate serde_derive;
@@ -24,32 +21,7 @@ use tokio::io::AsyncReadExt;
 use tokio::time::sleep;
 
 // Local dependencies
-mod codec;
-mod crypto;
-mod curve25519;
-mod frames;
-mod keepalive_controller;
-mod meta_data;
-mod ntp;
-mod raop_client;
-mod raop_params;
-mod rtp;
-mod rtsp_client;
-mod sample_rate;
-mod serialization;
-mod sync_controller;
-mod timing_controller;
-mod volume;
-
-use crate::codec::Codec;
-use crate::crypto::Crypto;
-use crate::frames::Frames;
-use crate::meta_data::MetaDataItem;
-use crate::ntp::NtpTime;
-use crate::raop_client::{RaopClient, MAX_SAMPLES_PER_CHUNK};
-use crate::raop_params::RaopParams;
-use crate::sample_rate::SampleRate;
-use crate::volume::Volume;
+use raop_play::{Codec, Crypto, Frames, MetaDataItem, NtpTime, RaopClient, MAX_SAMPLES_PER_CHUNK, RaopParams, SampleRate, Volume};
 
 const USAGE: &str = "
 Usage:
@@ -81,7 +53,6 @@ struct Args {
 #[derive(Clone, Copy, PartialEq)]
 enum Status {
     Stopped,
-    Paused,
     Playing,
 }
 
@@ -187,9 +158,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 raopcl.accept_frames().await?;
                 raopcl.send_chunk(&buf[0..n], &mut playtime).await?;
                 frames.add_assign(Frames::from_usize(n, 4));
-            }
-            Status::Paused => {
-                unimplemented!();
             }
             Status::Stopped => {
                 break;
