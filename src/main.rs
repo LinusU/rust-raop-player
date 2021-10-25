@@ -36,6 +36,8 @@ Options:
     -l LATENCY    Latency in frames [default: 44100]
     -p PORT       Specify remote port [default: 5000]
     -v VOLUME     Specify volume between 0 and 100
+    -t ET         et-field in mDNS - used to detect MFi
+    -m MD         md in mDNS: metadata capabilties 0=text, 1=artwork, 2=progress
 ";
 
 #[derive(Deserialize)]
@@ -48,6 +50,8 @@ struct Args {
     flag_l: u64,
     flag_p: u16,
     flag_v: Option<u8>,
+    flag_t: Option<String>,
+    flag_m: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -110,6 +114,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     params.set_codec(Codec::new(args.flag_a, MAX_SAMPLES_PER_CHUNK, SampleRate::Hz44100, 16, 2));
     params.set_desired_latency(Frames::new(args.flag_l));
     params.set_crypto(Crypto::new(args.flag_e));
+    if let Some(et) = args.flag_t {
+        params.set_et(et);
+    }
+
+    if let Some(md) = args.flag_m {
+        params.set_md(md);
+    }
 
     let remote = SocketAddr::new(args.arg_server_ip, args.flag_p);
     let mut infile = open_file(args.arg_filename).await?;
