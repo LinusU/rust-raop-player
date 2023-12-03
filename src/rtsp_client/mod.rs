@@ -3,9 +3,9 @@ use std::net::IpAddr;
 
 use hex::FromHex;
 use log::{error, debug};
-use openssl::sha::Sha512;
 use openssl::symm::{Cipher, Mode, Crypter};
 use rand::random;
+use sha2::{Sha512, Digest};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, ToSocketAddrs};
 
@@ -132,14 +132,14 @@ impl RTSPClient {
             let mut hasher = Sha512::new();
             hasher.update(b"Pair-Verify-AES-Key");
             hasher.update(&shared_secret);
-            &hasher.finish()[0..16]
+            &hasher.finalize()[0..16]
         };
 
         let aes_iv = {
             let mut hasher = Sha512::new();
             hasher.update(b"Pair-Verify-AES-IV");
             hasher.update(&shared_secret);
-            &hasher.finish()[0..16]
+            &hasher.finalize()[0..16]
         };
 
         // sign the verify_pub and atv_pub
