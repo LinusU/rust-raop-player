@@ -20,8 +20,6 @@ futures = "^0.3.0"
 hex = "^0.4.0"
 log = "^0.4.11"
 num-bigint-dig = { version = "0.8.4", default-features = false, features = ["std"] }
-openssl = { version = "^0.10.26", features = ["vendored"] }
-openssl-sys = "^0.9.53"
 rand = "^0.8.4"
 rsa = { version = "0.9.6", default-features = false }
 serde = "^1.0.88"
