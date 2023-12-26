@@ -1,15 +1,16 @@
 use std::io::Write;
 use std::net::IpAddr;
 
+use aes::{Aes128, cipher::{KeyIvInit, StreamCipher}};
+use ctr::Ctr128BE;
+use ed25519_dalek::{SecretKey, SigningKey, PUBLIC_KEY_LENGTH, Signer, Signature};
 use hex::FromHex;
 use log::{error, debug};
-use openssl::sha::Sha512;
-use openssl::symm::{Cipher, Mode, Crypter};
-use rand::random;
+use sha2::{Sha512, Digest};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, ToSocketAddrs};
+use x25519_dalek::{StaticSecret, PublicKey};
 
-use crate::curve25519;
 use crate::frames::Frames;
 use crate::meta_data::MetaDataItem;
 use crate::serialization::Serializable;
@@ -101,63 +102,69 @@ impl RTSPClient {
 
     pub async fn pair_verify(&mut self, secret_hex: &str) -> Result<(), RtspError> {
         // retrieve authentication keys from secret
-        let secret = <[u8; curve25519::SECRET_KEY_SIZE]>::from_hex(secret_hex)?;
-        let (auth_priv, auth_pub) = curve25519::create_key_pair(&secret);
+        let secret = SecretKey::from_hex(secret_hex)?;
+        let auth_priv = SigningKey::from_bytes(&secret);
 
         // create a verification public key
-        let verify_secret: [u8; curve25519::SECRET_KEY_SIZE] = random();
-        let verify_pub = curve25519::calculate_public_key(&verify_secret);
+        let verify_secret = StaticSecret::random_from_rng(rand::thread_rng());
+        let verify_pub = PublicKey::from(&verify_secret);
 
         // POST the auth_pub and verify_pub concataned
-        let mut buf = Vec::with_capacity(4 + curve25519::PUBLIC_KEY_SIZE * 2);
+        let mut buf = Vec::with_capacity(4 + PUBLIC_KEY_LENGTH * 2);
         buf.extend(b"\x01\x00\x00\x00");
-        buf.extend_from_slice(&verify_pub);
-        buf.extend_from_slice(&auth_pub);
+        buf.extend_from_slice(verify_pub.as_bytes());
+        buf.extend_from_slice(auth_priv.verifying_key().as_bytes());
 
         let (_, content) = self.exec_request("POST", Body::Blob { content_type: "application/octet-stream", content: &buf }, vec!(), Some("/pair-verify")).await
             .map_err(|err| { error!("AppleTV verify step 1 failed (pair again)"); err })?;
 
         drop(buf);
 
-        // FIXME: flag to self.exec_request should make it return binary response
-        let content = content.as_bytes();
-
         // get atv_pub and atv_data then create shared secret
-        let atv_pub = &content[0..curve25519::PUBLIC_KEY_SIZE];
-        let atv_data = &content[curve25519::PUBLIC_KEY_SIZE..];
-        let shared_secret = curve25519::create_shared_key(&atv_pub, &verify_secret);
+        assert_eq!(content.len(), PUBLIC_KEY_LENGTH * 2);
+        let atv_pub: [u8; PUBLIC_KEY_LENGTH] = content[0..PUBLIC_KEY_LENGTH].try_into().unwrap();
+        let atv_data: [u8; PUBLIC_KEY_LENGTH] = content[PUBLIC_KEY_LENGTH..].try_into().unwrap();
+
+        let shared_secret = {
+            let secret_key = StaticSecret::from(atv_data);
+            let peer_key = PublicKey::from(atv_pub);
+
+            secret_key.diffie_hellman(&peer_key)
+        };
 
         // build AES-key & AES-iv from shared secret digest
-        let aes_key = {
+        let aes_key: [u8; 16] = {
             let mut hasher = Sha512::new();
             hasher.update(b"Pair-Verify-AES-Key");
             hasher.update(&shared_secret);
-            &hasher.finish()[0..16]
+            hasher.finalize()[0..16].try_into().unwrap()
         };
 
-        let aes_iv = {
+        let aes_iv: [u8; 16] = {
             let mut hasher = Sha512::new();
             hasher.update(b"Pair-Verify-AES-IV");
             hasher.update(&shared_secret);
-            &hasher.finish()[0..16]
+            hasher.finalize()[0..16].try_into().unwrap()
         };
 
         // sign the verify_pub and atv_pub
-        let signed_keys = {
-            let mut message = Vec::with_capacity(curve25519::PUBLIC_KEY_SIZE * 2);
-            message.extend_from_slice(&verify_pub);
+        let signed_keys: [u8; Signature::BYTE_SIZE] = {
+            let mut message = Vec::with_capacity(PUBLIC_KEY_LENGTH * 2);
+            message.extend_from_slice(verify_pub.as_bytes());
             message.extend_from_slice(&atv_pub);
-            curve25519::sign_message(&auth_priv, &message)
+            auth_priv.sign(&message).into()
         };
 
         // encrypt the signed result + atv_data, add 4 NULL bytes at the beginning
-        let mut ctx = Crypter::new(Cipher::aes_128_ctr(), Mode::Encrypt, &aes_key, Some(&aes_iv))?;
-        let mut buf = [0u8; 4 + curve25519::SIGNATURE_SIZE];
+        let mut ctx = Ctr128BE::<Aes128>::new(&aes_key.into(), &aes_iv.into());
+        let mut buf = [0u8; 4 + Signature::BYTE_SIZE];
 
         // Encrypt <atv_data>, discard result
-        ctx.update(&atv_data, &mut buf)?;
+        let mut unused = [0u8; PUBLIC_KEY_LENGTH];
+        ctx.apply_keystream_b2b(&atv_data, &mut unused).expect("encryption failed");
+
         // Encrypt <signed> and keep result as the signature <signature> (64 bytes)
-        ctx.update(&signed_keys, &mut buf[4..])?;
+        ctx.apply_keystream_b2b(&signed_keys, &mut buf[4..]).expect("encryption failed");
 
         // Concatenate this <signature> with a 4 bytes header “\0x00\0x00\0x00\0x00”
         buf[0] = 0;
@@ -172,12 +179,12 @@ impl RTSPClient {
     }
 
     pub async fn auth_setup(&mut self) -> Result<(), RtspError> {
-        let secret: [u8; curve25519::SECRET_KEY_SIZE] = random();
-        let pub_key = curve25519::calculate_public_key(&secret);
+        let secret = StaticSecret::random_from_rng(rand::thread_rng());
+        let pub_key = PublicKey::from(&secret);
 
-        let mut buf = Vec::with_capacity(1 + curve25519::PUBLIC_KEY_SIZE);
+        let mut buf = Vec::with_capacity(1 + PUBLIC_KEY_LENGTH);
         buf.push(0x01);
-        buf.extend_from_slice(&pub_key);
+        buf.extend_from_slice(pub_key.as_bytes());
 
         self.exec_request("POST", Body::Blob { content_type: "application/octet-stream", content: &buf }, vec!(), Some("/auth-setup")).await
             .map_err(|err| { error!("auth-setup failed"); err })

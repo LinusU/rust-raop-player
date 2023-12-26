@@ -3,7 +3,6 @@
 
 mod codec;
 mod crypto;
-mod curve25519;
 mod frames;
 mod keepalive_controller;
 mod meta_data;
