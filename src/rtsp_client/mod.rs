@@ -119,9 +119,6 @@ impl RTSPClient {
 
         drop(buf);
 
-        // FIXME: flag to self.exec_request should make it return binary response
-        let content = content.as_bytes();
-
         // get atv_pub and atv_data then create shared secret
         let atv_pub = &content[0..curve25519::PUBLIC_KEY_SIZE];
         let atv_data = &content[curve25519::PUBLIC_KEY_SIZE..];

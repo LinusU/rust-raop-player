@@ -13,9 +13,9 @@ pub enum RtspError {
     ParseResponseError(ParseResponseError),
     DecodeResponseError(FromUtf8Error),
     OpenSslError(openssl::error::ErrorStack),
-    ClientError { status: u16, headers: Vec<(String, String)>, body: String },
-    ServerError { status: u16, headers: Vec<(String, String)>, body: String },
-    UnknownError { status: u16, headers: Vec<(String, String)>, body: String },
+    ClientError { status: u16, headers: Vec<(String, String)>, body: Vec<u8> },
+    ServerError { status: u16, headers: Vec<(String, String)>, body: Vec<u8> },
+    UnknownError { status: u16, headers: Vec<(String, String)>, body: Vec<u8> },
 }
 
 impl Display for RtspError {
