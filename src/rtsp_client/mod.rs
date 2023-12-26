@@ -1,10 +1,11 @@
 use std::io::Write;
 use std::net::IpAddr;
 
+use aes::{Aes128, cipher::{KeyIvInit, StreamCipher}};
+use ctr::Ctr128BE;
 use ed25519_dalek::{SecretKey, SigningKey, PUBLIC_KEY_LENGTH, Signer, Signature};
 use hex::FromHex;
 use log::{error, debug};
-use openssl::symm::{Cipher, Mode, Crypter};
 use sha2::{Sha512, Digest};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, ToSocketAddrs};
@@ -119,9 +120,8 @@ impl RTSPClient {
 
         drop(buf);
 
-        assert_eq!(content.len(), PUBLIC_KEY_LENGTH * 2);
-
         // get atv_pub and atv_data then create shared secret
+        assert_eq!(content.len(), PUBLIC_KEY_LENGTH * 2);
         let atv_pub: [u8; PUBLIC_KEY_LENGTH] = content[0..PUBLIC_KEY_LENGTH].try_into().unwrap();
         let atv_data: [u8; PUBLIC_KEY_LENGTH] = content[PUBLIC_KEY_LENGTH..].try_into().unwrap();
 
@@ -133,18 +133,18 @@ impl RTSPClient {
         };
 
         // build AES-key & AES-iv from shared secret digest
-        let aes_key = {
+        let aes_key: [u8; 16] = {
             let mut hasher = Sha512::new();
             hasher.update(b"Pair-Verify-AES-Key");
             hasher.update(&shared_secret);
-            &hasher.finalize()[0..16]
+            hasher.finalize()[0..16].try_into().unwrap()
         };
 
-        let aes_iv = {
+        let aes_iv: [u8; 16] = {
             let mut hasher = Sha512::new();
             hasher.update(b"Pair-Verify-AES-IV");
             hasher.update(&shared_secret);
-            &hasher.finalize()[0..16]
+            hasher.finalize()[0..16].try_into().unwrap()
         };
 
         // sign the verify_pub and atv_pub
@@ -156,13 +156,15 @@ impl RTSPClient {
         };
 
         // encrypt the signed result + atv_data, add 4 NULL bytes at the beginning
-        let mut ctx = Crypter::new(Cipher::aes_128_ctr(), Mode::Encrypt, &aes_key, Some(&aes_iv))?;
+        let mut ctx = Ctr128BE::<Aes128>::new(&aes_key.into(), &aes_iv.into());
         let mut buf = [0u8; 4 + Signature::BYTE_SIZE];
 
         // Encrypt <atv_data>, discard result
-        ctx.update(&atv_data, &mut buf)?;
+        let mut unused = [0u8; PUBLIC_KEY_LENGTH];
+        ctx.apply_keystream_b2b(&atv_data, &mut unused).expect("encryption failed");
+
         // Encrypt <signed> and keep result as the signature <signature> (64 bytes)
-        ctx.update(&signed_keys, &mut buf[4..])?;
+        ctx.apply_keystream_b2b(&signed_keys, &mut buf[4..]).expect("encryption failed");
 
         // Concatenate this <signature> with a 4 bytes header “\0x00\0x00\0x00\0x00”
         buf[0] = 0;
