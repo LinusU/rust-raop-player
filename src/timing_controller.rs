@@ -4,32 +4,27 @@ use crate::serialization::{Deserializable, Serializable};
 
 use std::time::Duration;
 
-use futures::future::{Abortable, AbortHandle};
+use async_executor::{Task, LocalExecutor};
+use async_io::Timer;
+use async_net::UdpSocket;
 use futures::prelude::*;
-use smol::net::UdpSocket;
-use smol::Timer;
 
 use log::{error, debug};
 
 pub struct TimingController {
-    abort_handle: Option<AbortHandle>,
+    task: Option<Task<()>>,
 }
 
 impl TimingController {
-    pub fn start(socket: UdpSocket) -> TimingController {
-        let (abort_handle, abort_registration) = AbortHandle::new_pair();
-
+    pub fn start(executor: &LocalExecutor, socket: UdpSocket) -> TimingController {
         let future = run(socket).map(|result| { result.unwrap(); });
-        let future = Abortable::new(future, abort_registration).map(|_| {});
 
-        smol::spawn(future).detach();
-
-        TimingController { abort_handle: Some(abort_handle) }
+        TimingController { task: Some(executor.spawn(future)) }
     }
 
-    pub fn stop(&mut self) {
-        if let Some(abort_handle) = self.abort_handle.take() {
-            abort_handle.abort();
+    pub async fn stop(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.cancel().await;
         }
     }
 }

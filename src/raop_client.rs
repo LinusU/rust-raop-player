@@ -17,12 +17,13 @@ use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use std::sync::Arc;
 
+use async_executor::LocalExecutor;
+use async_io::Timer;
+use async_lock::Mutex;
+use async_net::UdpSocket;
 use beefeater::Beefeater;
-use rand::random;
 use log::{error, info, debug, trace};
-use smol::lock::Mutex;
-use smol::net::UdpSocket;
-use smol::Timer;
+use rand::random;
 
 const LATENCY_MIN: Frames = Frames::new(11025);
 
@@ -165,7 +166,7 @@ pub struct RaopClient {
 }
 
 impl RaopClient {
-    pub async fn connect(params: RaopParams, remote: SocketAddr) -> Result<RaopClient, Box<dyn std::error::Error>> {
+    pub async fn connect(executor: &LocalExecutor<'_>, params: RaopParams, remote: SocketAddr) -> Result<RaopClient, Box<dyn std::error::Error>> {
         if params.codec.chunk_length() > MAX_SAMPLES_PER_CHUNK {
             panic!("Chunk length must below {}", MAX_SAMPLES_PER_CHUNK);
         }
@@ -218,7 +219,7 @@ impl RaopClient {
         // AppleTV expects now the timing port ot be opened BEFORE the setup message
         let rtp_time = UdpSocket::bind((local_ip, 0)).await?;
         let local_time_port = rtp_time.local_addr()?.port();
-        let timing_controller = TimingController::start(rtp_time);
+        let timing_controller = TimingController::start(executor, rtp_time);
 
         // RTSP ANNOUNCE
         if params.auth && !params.crypto.is_clear() {
@@ -297,11 +298,11 @@ impl RaopClient {
             let retransmit = Arc::clone(&retransmit);
             let sample_rate = params.codec.sample_rate();
 
-            SyncController::start(rtp_ctrl, status_ref, sane_ref, retransmit, latency, sample_rate)
+            SyncController::start(executor, rtp_ctrl, status_ref, sane_ref, retransmit, latency, sample_rate)
         };
 
         let rtsp_client_mutex = Arc::new(Mutex::new(rtsp_client));
-        let keepalive_controller = KeepaliveController::start(Arc::clone(&rtsp_client_mutex));
+        let keepalive_controller = KeepaliveController::start(executor, Arc::clone(&rtsp_client_mutex));
 
         Ok(RaopClient {
             // Immutable properties
@@ -530,9 +531,9 @@ impl RaopClient {
     pub async fn teardown(mut self) -> Result<(), Box<dyn std::error::Error>> {
         let status = self.status.lock().await;
 
-        self.keepalive_controller.stop();
-        self.sync_controller.stop();
-        self.timing_controller.stop();
+        self.keepalive_controller.stop().await;
+        self.sync_controller.stop().await;
+        self.timing_controller.stop().await;
 
         let mut rtsp_client = self.rtsp_client.lock().await;
         rtsp_client.flush(status.seq_number + 1, status.head_ts + Frames::new(1)).await?;

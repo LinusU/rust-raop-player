@@ -3,32 +3,27 @@ use crate::rtsp_client::RTSPClient;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::future::{Abortable, AbortHandle};
+use async_executor::{Task, LocalExecutor};
+use async_io::Timer;
+use async_lock::Mutex;
 use futures::prelude::*;
-use smol::lock::Mutex;
-use smol::Timer;
 
 use log::debug;
 
 pub struct KeepaliveController {
-    abort_handle: Option<AbortHandle>,
+    task: Option<Task<()>>,
 }
 
 impl KeepaliveController {
-    pub fn start(rtsp_client: Arc<Mutex<RTSPClient>>) -> KeepaliveController {
-        let (abort_handle, abort_registration) = AbortHandle::new_pair();
-
+    pub fn start(executor: &LocalExecutor, rtsp_client: Arc<Mutex<RTSPClient>>) -> KeepaliveController {
         let future = run(rtsp_client).map(|result| { result.unwrap(); });
-        let future = Abortable::new(future, abort_registration).map(|_| {});
 
-        smol::spawn(future).detach();
-
-        KeepaliveController { abort_handle: Some(abort_handle) }
+        KeepaliveController { task: Some(executor.spawn(future))  }
     }
 
-    pub fn stop(&mut self) {
-        if let Some(abort_handle) = self.abort_handle.take() {
-            abort_handle.abort();
+    pub async fn stop(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.cancel().await;
         }
     }
 }

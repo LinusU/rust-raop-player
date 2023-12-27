@@ -7,39 +7,36 @@ use crate::serialization::{Deserializable, Serializable};
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_executor::{Task, LocalExecutor};
+use async_io::Timer;
+use async_lock::Mutex;
+use async_net::UdpSocket;
 use beefeater::{AddAssign, Beefeater};
-use futures::future::{Abortable, AbortHandle, join};
+use futures::future::join;
 use futures::prelude::*;
-use smol::lock::Mutex;
-use smol::net::UdpSocket;
-use smol::Timer;
 
 use log::{error, warn, info, debug, trace};
 
 pub struct SyncController {
-    abort_handle: Option<AbortHandle>,
     socket: Arc<UdpSocket>,
+    task: Option<Task<((), ())>>,
 }
 
 impl SyncController {
-    pub fn start(socket: UdpSocket, status_mutex: Arc<Mutex<Status>>, sane_mutex: Arc<Mutex<Sane>>, retransmit: Arc<Beefeater<u32>>, latency: Frames, sample_rate: SampleRate) -> SyncController {
+    pub fn start(executor: &LocalExecutor, socket: UdpSocket, status_mutex: Arc<Mutex<Status>>, sane_mutex: Arc<Mutex<Sane>>, retransmit: Arc<Beefeater<u32>>, latency: Frames, sample_rate: SampleRate) -> SyncController {
         let socket = Arc::new(socket);
-        let (abort_handle, abort_registration) = AbortHandle::new_pair();
 
         let receiving = receive(Arc::clone(&socket), Arc::clone(&status_mutex), sane_mutex, retransmit);
         let sending = send_sync_every_second(Arc::clone(&socket), status_mutex, latency, sample_rate);
 
         let pair = join(receiving.map(|result| { result.unwrap(); }), sending.map(|result| { result.unwrap(); }));
-        let future = Abortable::new(pair, abort_registration).map(|_| {});
 
-        smol::spawn(future).detach();
-
-        SyncController { abort_handle: Some(abort_handle), socket }
+        SyncController { socket, task: Some(executor.spawn(pair)) }
     }
 
-    pub fn stop(&mut self) {
-        if let Some(abort_handle) = self.abort_handle.take() {
-            abort_handle.abort();
+    pub async fn stop(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.cancel().await;
         }
     }
 

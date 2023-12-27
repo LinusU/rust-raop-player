@@ -1,6 +1,7 @@
 // Docopt
 #[macro_use]
 extern crate serde_derive;
+use async_executor::{Task, LocalExecutor};
 use docopt::Docopt;
 
 // Standard dependencies
@@ -10,15 +11,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 // General dependencies
+use async_fs::File;
+use async_io::Timer;
 use beefeater::{AddAssign, Beefeater};
 use ctrlc;
+use futures::AsyncReadExt;
 use futures::future::{Abortable, AbortHandle};
 use futures::FutureExt;
 use log::{debug, info, warn};
 use stderrlog;
-use smol::fs::File;
-use smol::io::AsyncReadExt;
-use smol::Timer;
 
 // Local dependencies
 use raop_play::{Codec, Crypto, Frames, MetaDataItem, NtpTime, RaopClient, MAX_SAMPLES_PER_CHUNK, RaopParams, SampleRate, Volume};
@@ -57,20 +58,17 @@ enum Status {
 }
 
 struct StatusLogger {
-    abort_handle: AbortHandle,
+    task: Task<()>,
 }
 
 impl StatusLogger {
-    fn start(start: NtpTime, frames: Arc<Beefeater<Frames>>, latency: Frames, sample_rate: SampleRate) -> StatusLogger {
-        let (abort_handle, abort_registration) = AbortHandle::new_pair();
+    fn start(executor: &LocalExecutor, start: NtpTime, frames: Arc<Beefeater<Frames>>, latency: Frames, sample_rate: SampleRate) -> StatusLogger {
         let future = StatusLogger::run(start, frames, latency, sample_rate);
-        let future = Abortable::new(future, abort_registration).map(|_| {});
-        smol::spawn(future).detach();
-        StatusLogger { abort_handle }
+        StatusLogger { task: executor.spawn(future) }
     }
 
-    fn stop(self) {
-        self.abort_handle.abort();
+    async fn stop(self) {
+        self.task.cancel().await;
     }
 
     async fn run(start: NtpTime, frames: Arc<Beefeater<Frames>>, latency: Frames, sample_rate: SampleRate) {
@@ -90,17 +88,21 @@ impl StatusLogger {
 async fn open_file(name: String) -> std::io::Result<File> {
     if name == "-" {
         // This is safe because this is the only thing accessing stdin
-        Ok(unsafe { File::from_raw_fd(0) })
+        // Ok(unsafe { File::from_raw_fd(0) })
+        todo!()
     } else {
         File::open(name).await
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    smol::block_on(main_())
+    let executor = LocalExecutor::new();
+    let future = main_(&executor);
+
+    futures::executor::block_on(executor.run(future))
 }
 
-async fn main_() -> Result<(), Box<dyn std::error::Error>> {
+async fn main_(executor: &LocalExecutor<'_>) -> Result<(), Box<dyn std::error::Error>> {
     let args: Args = Docopt::new(USAGE)
         .and_then(|d| d.deserialize())
         .unwrap_or_else(|e| e.exit());
@@ -116,7 +118,7 @@ async fn main_() -> Result<(), Box<dyn std::error::Error>> {
     let remote = SocketAddr::new(args.arg_server_ip, args.flag_p);
     let mut infile = open_file(args.arg_filename).await?;
 
-    let mut raopcl = RaopClient::connect(params, remote).await?;
+    let mut raopcl = RaopClient::connect(&executor, params, remote).await?;
 
     if let Some(volume) = args.flag_v {
         raopcl.set_volume(Volume::from_percent(volume)).await?;
@@ -149,7 +151,7 @@ async fn main_() -> Result<(), Box<dyn std::error::Error>> {
         })?;
     }
 
-    let status_logger = StatusLogger::start(start, Arc::clone(&frames), raopcl.latency(), raopcl.sample_rate());
+    let status_logger = StatusLogger::start(&executor, start, Arc::clone(&frames), raopcl.latency(), raopcl.sample_rate());
 
     loop {
         match status.load() {
