@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use futures::future::{Abortable, AbortHandle};
 use futures::prelude::*;
-use tokio::net::UdpSocket;
-use tokio::time::sleep;
+use smol::net::UdpSocket;
+use smol::Timer;
 
 use log::{error, debug};
 
@@ -22,7 +22,7 @@ impl TimingController {
         let future = run(socket).map(|result| { result.unwrap(); });
         let future = Abortable::new(future, abort_registration).map(|_| {});
 
-        tokio::spawn(future);
+        smol::spawn(future).detach();
 
         TimingController { abort_handle: Some(abort_handle) }
     }
@@ -77,7 +77,7 @@ async fn run(socket: UdpSocket) -> Result<(), Box<dyn std::error::Error>> {
 
         if n == 0 {
             error!("read, disconnected on the other end");
-            sleep(Duration::from_millis(100)).await;
+            Timer::after(Duration::from_millis(100)).await;
         }
     }
 }

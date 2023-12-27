@@ -7,8 +7,8 @@ use ed25519_dalek::{SecretKey, SigningKey, PUBLIC_KEY_LENGTH, Signer, Signature}
 use hex::FromHex;
 use log::{error, debug};
 use sha2::{Sha512, Digest};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{TcpStream, ToSocketAddrs};
+use smol::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use smol::net::{TcpStream, AsyncToSocketAddrs};
 use x25519_dalek::{StaticSecret, PublicKey};
 
 use crate::frames::Frames;
@@ -77,7 +77,7 @@ pub struct RTSPClient {
 }
 
 impl RTSPClient {
-    pub async fn connect<A: ToSocketAddrs>(addr: A, sid: &str, user_agent: &str, headers: &[(&str, &str)]) -> Result<RTSPClient, Box<dyn std::error::Error>> {
+    pub async fn connect<A: AsyncToSocketAddrs>(addr: A, sid: &str, user_agent: &str, headers: &[(&str, &str)]) -> Result<RTSPClient, Box<dyn std::error::Error>> {
         let socket = TcpStream::connect(addr).await?;
         let peer_addr = socket.peer_addr()?;
 

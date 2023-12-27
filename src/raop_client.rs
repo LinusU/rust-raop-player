@@ -8,7 +8,7 @@ use crate::raop_params::RaopParams;
 use crate::rtp::{RtpHeader, RtpAudioPacket};
 use crate::rtsp_client::RTSPClient;
 use crate::sample_rate::SampleRate;
-use crate::serialization::{Serializable};
+use crate::serialization::Serializable;
 use crate::sync_controller::SyncController;
 use crate::timing_controller::TimingController;
 use crate::volume::Volume;
@@ -20,9 +20,9 @@ use std::sync::Arc;
 use beefeater::Beefeater;
 use rand::random;
 use log::{error, info, debug, trace};
-use tokio::net::UdpSocket;
-use tokio::sync::Mutex;
-use tokio::time::sleep;
+use smol::lock::Mutex;
+use smol::net::UdpSocket;
+use smol::Timer;
 
 const LATENCY_MIN: Frames = Frames::new(11025);
 
@@ -452,7 +452,7 @@ impl RaopClient {
         if now_ts < head_ts + chunk_length {
             let sleep_frames = (head_ts + chunk_length) - now_ts;
             let sleep_duration = sleep_frames / self.codec.sample_rate();
-            sleep(sleep_duration).await;
+            Timer::after(sleep_duration).await;
         }
 
         Ok(())

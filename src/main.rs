@@ -16,9 +16,9 @@ use futures::future::{Abortable, AbortHandle};
 use futures::FutureExt;
 use log::{debug, info, warn};
 use stderrlog;
-use tokio::fs::File;
-use tokio::io::AsyncReadExt;
-use tokio::time::sleep;
+use smol::fs::File;
+use smol::io::AsyncReadExt;
+use smol::Timer;
 
 // Local dependencies
 use raop_play::{Codec, Crypto, Frames, MetaDataItem, NtpTime, RaopClient, MAX_SAMPLES_PER_CHUNK, RaopParams, SampleRate, Volume};
@@ -65,7 +65,7 @@ impl StatusLogger {
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
         let future = StatusLogger::run(start, frames, latency, sample_rate);
         let future = Abortable::new(future, abort_registration).map(|_| {});
-        tokio::spawn(future);
+        smol::spawn(future).detach();
         StatusLogger { abort_handle }
     }
 
@@ -82,23 +82,25 @@ impl StatusLogger {
                 debug!("at {} ({} ms after start), played {} ms", now, (now - start).as_millis(), ((frames - latency) / sample_rate).as_millis());
             }
 
-            sleep(Duration::from_secs(1)).await;
+            Timer::after(Duration::from_secs(1)).await;
         }
     }
 }
 
 async fn open_file(name: String) -> std::io::Result<File> {
     if name == "-" {
-        // FIXME: Using tokio::io::stdin results in glitched audio
         // This is safe because this is the only thing accessing stdin
-        Ok(File::from_std(unsafe { std::fs::File::from_raw_fd(0) }))
+        Ok(unsafe { File::from_raw_fd(0) })
     } else {
         File::open(name).await
     }
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    smol::block_on(main_())
+}
+
+async fn main_() -> Result<(), Box<dyn std::error::Error>> {
     let args: Args = Docopt::new(USAGE)
         .and_then(|d| d.deserialize())
         .unwrap_or_else(|e| e.exit());

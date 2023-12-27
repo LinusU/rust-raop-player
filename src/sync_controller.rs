@@ -10,9 +10,9 @@ use std::time::Duration;
 use beefeater::{AddAssign, Beefeater};
 use futures::future::{Abortable, AbortHandle, join};
 use futures::prelude::*;
-use tokio::net::UdpSocket;
-use tokio::sync::Mutex;
-use tokio::time::sleep;
+use smol::lock::Mutex;
+use smol::net::UdpSocket;
+use smol::Timer;
 
 use log::{error, warn, info, debug, trace};
 
@@ -32,7 +32,7 @@ impl SyncController {
         let pair = join(receiving.map(|result| { result.unwrap(); }), sending.map(|result| { result.unwrap(); }));
         let future = Abortable::new(pair, abort_registration).map(|_| {});
 
-        tokio::spawn(future);
+        smol::spawn(future).detach();
 
         SyncController { abort_handle: Some(abort_handle), socket }
     }
@@ -119,6 +119,6 @@ async fn send_sync_every_second(socket: Arc<UdpSocket>, status_mutex: Arc<Mutex<
         trace!("[SyncController::send_sync_every_second] - dropping status");
         drop(status);
 
-        sleep(Duration::from_secs(1)).await;
+        Timer::after(Duration::from_secs(1)).await;
     }
 }
