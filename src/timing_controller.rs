@@ -7,19 +7,16 @@ use std::time::Duration;
 use async_executor::{Task, LocalExecutor};
 use async_io::Timer;
 use async_net::UdpSocket;
-use futures::prelude::*;
 
 use log::{error, debug};
 
 pub struct TimingController {
-    task: Option<Task<()>>,
+    task: Option<Task<Result<(), Box<dyn std::error::Error>>>>,
 }
 
 impl TimingController {
     pub fn start(executor: &LocalExecutor, socket: UdpSocket) -> TimingController {
-        let future = run(socket).map(|result| { result.unwrap(); });
-
-        TimingController { task: Some(executor.spawn(future)) }
+        TimingController { task: Some(executor.spawn(run(socket))) }
     }
 
     pub async fn stop(&mut self) {

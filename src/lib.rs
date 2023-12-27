@@ -4,7 +4,6 @@
 mod codec;
 mod crypto;
 mod frames;
-mod keepalive_controller;
 mod meta_data;
 mod ntp;
 mod raop_client;

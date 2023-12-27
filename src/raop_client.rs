@@ -1,7 +1,6 @@
 use crate::codec::Codec;
 use crate::crypto::Crypto;
 use crate::frames::Frames;
-use crate::keepalive_controller::KeepaliveController;
 use crate::meta_data::MetaDataItem;
 use crate::ntp::NtpTime;
 use crate::raop_params::RaopParams;
@@ -16,8 +15,9 @@ use crate::volume::Volume;
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
-use async_executor::LocalExecutor;
+use async_executor::{LocalExecutor, Task};
 use async_io::Timer;
 use async_lock::Mutex;
 use async_net::UdpSocket;
@@ -29,6 +29,16 @@ const LATENCY_MIN: Frames = Frames::new(11025);
 
 pub const MAX_BACKLOG: u16 = 512;
 pub const MAX_SAMPLES_PER_CHUNK: Frames = Frames::new(352);
+
+async fn keepalive_loop(rtsp_client: Arc<Mutex<RTSPClient>>) -> () {
+    loop {
+        Timer::after(Duration::from_secs(5)).await;
+
+        let mut client = rtsp_client.lock().await;
+        debug!("sending keepalive packet");
+        client.options(vec![]).await.unwrap();
+    }
+}
 
 pub fn analyse_setup(setup_headers: Vec<(String, String)>) -> Result<(u16, u16, u16), Box<dyn std::error::Error>> {
     // get transport (port ...) info
@@ -150,7 +160,7 @@ pub struct RaopClient {
     ssrc: u32,
 
     // Mutable properties
-    keepalive_controller: KeepaliveController,
+    keepalive_task: Task<()>,
     rtp_audio: Arc<Mutex<UdpSocket>>,
     sync_controller: SyncController,
     timing_controller: TimingController,
@@ -302,7 +312,7 @@ impl RaopClient {
         };
 
         let rtsp_client_mutex = Arc::new(Mutex::new(rtsp_client));
-        let keepalive_controller = KeepaliveController::start(executor, Arc::clone(&rtsp_client_mutex));
+        let keepalive_task = executor.spawn(keepalive_loop(Arc::clone(&rtsp_client_mutex)));
 
         Ok(RaopClient {
             // Immutable properties
@@ -314,7 +324,7 @@ impl RaopClient {
             et: params.et,
 
             // Mutable properties
-            keepalive_controller,
+            keepalive_task,
             rtp_audio: rtp_audio_mutex,
             sync_controller,
             timing_controller,
@@ -531,7 +541,7 @@ impl RaopClient {
     pub async fn teardown(mut self) -> Result<(), Box<dyn std::error::Error>> {
         let status = self.status.lock().await;
 
-        self.keepalive_controller.stop().await;
+        self.keepalive_task.cancel().await;
         self.sync_controller.stop().await;
         self.timing_controller.stop().await;
 

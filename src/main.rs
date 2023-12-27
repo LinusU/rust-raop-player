@@ -6,7 +6,6 @@ use docopt::Docopt;
 
 // Standard dependencies
 use std::net::{IpAddr, SocketAddr};
-use std::os::unix::io::FromRawFd;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,9 +14,7 @@ use async_fs::File;
 use async_io::Timer;
 use beefeater::{AddAssign, Beefeater};
 use ctrlc;
-use futures::AsyncReadExt;
-use futures::future::{Abortable, AbortHandle};
-use futures::FutureExt;
+use futures_lite::AsyncReadExt;
 use log::{debug, info, warn};
 use stderrlog;
 
@@ -87,9 +84,7 @@ impl StatusLogger {
 
 async fn open_file(name: String) -> std::io::Result<File> {
     if name == "-" {
-        // This is safe because this is the only thing accessing stdin
-        // Ok(unsafe { File::from_raw_fd(0) })
-        todo!()
+        File::open("/dev/stdin").await
     } else {
         File::open(name).await
     }
@@ -99,7 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let executor = LocalExecutor::new();
     let future = main_(&executor);
 
-    futures::executor::block_on(executor.run(future))
+    futures_lite::future::block_on(executor.run(future))
 }
 
 async fn main_(executor: &LocalExecutor<'_>) -> Result<(), Box<dyn std::error::Error>> {
@@ -168,6 +163,6 @@ async fn main_(executor: &LocalExecutor<'_>) -> Result<(), Box<dyn std::error::E
         }
     }
 
-    status_logger.stop();
+    status_logger.stop().await;
     raopcl.teardown().await
 }

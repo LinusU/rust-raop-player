@@ -12,14 +12,13 @@ use async_io::Timer;
 use async_lock::Mutex;
 use async_net::UdpSocket;
 use beefeater::{AddAssign, Beefeater};
-use futures::future::join;
-use futures::prelude::*;
+use futures_lite::future::zip;
 
 use log::{error, warn, info, debug, trace};
 
 pub struct SyncController {
     socket: Arc<UdpSocket>,
-    task: Option<Task<((), ())>>,
+    task: Option<Task<(Result<(), std::io::Error>, Result<(), std::io::Error>)>>,
 }
 
 impl SyncController {
@@ -29,9 +28,7 @@ impl SyncController {
         let receiving = receive(Arc::clone(&socket), Arc::clone(&status_mutex), sane_mutex, retransmit);
         let sending = send_sync_every_second(Arc::clone(&socket), status_mutex, latency, sample_rate);
 
-        let pair = join(receiving.map(|result| { result.unwrap(); }), sending.map(|result| { result.unwrap(); }));
-
-        SyncController { socket, task: Some(executor.spawn(pair)) }
+        SyncController { socket, task: Some(executor.spawn(zip(receiving, sending))) }
     }
 
     pub async fn stop(&mut self) {

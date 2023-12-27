@@ -2,7 +2,7 @@ use std::io::Write;
 use std::net::IpAddr;
 
 use aes::{Aes128, cipher::{KeyIvInit, StreamCipher}};
-use futures::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, io::BufReader};
+use futures_lite::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, io::BufReader};
 use async_net::{TcpStream, AsyncToSocketAddrs};
 use ctr::Ctr128BE;
 use ed25519_dalek::{SecretKey, SigningKey, PUBLIC_KEY_LENGTH, Signer, Signature};
