@@ -1,5 +1,5 @@
 use std::error::Error;
-use std::fmt::{self, Formatter, Display};
+use std::fmt::{self, Display, Formatter};
 use std::num::ParseIntError;
 use std::string::FromUtf8Error;
 
@@ -46,7 +46,11 @@ impl ResponseBuilder {
         let status = status_line.split_whitespace().nth(1).ok_or(ParseResponseError::InvalidStatusLine)?;
         let status = status.parse().map_err(ParseResponseError::InvalidStatusCode)?;
 
-        Ok(ResponseBuilder { status, headers: Vec::new(), content_length: 0 })
+        Ok(ResponseBuilder {
+            status,
+            headers: Vec::new(),
+            content_length: 0,
+        })
     }
 
     pub fn content_length(&self) -> usize {
@@ -77,19 +81,31 @@ impl ResponseBuilder {
                 }
 
                 content.into_bytes()
-            },
+            }
             Err(error) => {
                 let bytes = error.into_bytes();
                 debug!("<---- ({} bytes)", bytes.len());
                 bytes
-            },
+            }
         };
 
         match self.status {
             200..=299 => Ok((self.headers, body)),
-            400..=499 => Err(RtspError::Client { status: self.status, headers: self.headers, body }),
-            500..=599 => Err(RtspError::Server { status: self.status, headers: self.headers, body }),
-            _ => Err(RtspError::Unknown { status: self.status, headers: self.headers, body })
+            400..=499 => Err(RtspError::Client {
+                status: self.status,
+                headers: self.headers,
+                body,
+            }),
+            500..=599 => Err(RtspError::Server {
+                status: self.status,
+                headers: self.headers,
+                body,
+            }),
+            _ => Err(RtspError::Unknown {
+                status: self.status,
+                headers: self.headers,
+                body,
+            }),
         }
     }
 }

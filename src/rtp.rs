@@ -5,9 +5,13 @@ use crate::serialization::{Deserializable, Serializable};
 
 use std::io::{self, Read, Write};
 
-use byteorder::{BE, ReadBytesExt, WriteBytesExt};
+use byteorder::{ReadBytesExt, WriteBytesExt, BE};
 
-const RETRANSMISSION_HEADER: RtpHeader = RtpHeader { proto: 0x80, type_: 0x56 | 0x80, seq: 1 };
+const RETRANSMISSION_HEADER: RtpHeader = RtpHeader {
+    proto: 0x80,
+    type_: 0x56 | 0x80,
+    seq: 1,
+};
 
 #[derive(Debug)]
 pub struct RtpHeader {
@@ -158,7 +162,13 @@ impl Deserializable for RtpTimePacket {
         let recv_time = NtpTime::deserialize(reader)?;
         let send_time = NtpTime::deserialize(reader)?;
 
-        Ok(RtpTimePacket { header, dummy, ref_time, recv_time, send_time })
+        Ok(RtpTimePacket {
+            header,
+            dummy,
+            ref_time,
+            recv_time,
+            send_time,
+        })
     }
 }
 

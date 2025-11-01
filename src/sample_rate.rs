@@ -1,5 +1,5 @@
 use std::convert::TryFrom;
-use std::fmt::{self, Formatter, Display};
+use std::fmt::{self, Display, Formatter};
 
 #[derive(Debug, Clone, Copy, PartialOrd, PartialEq, Ord, Eq)]
 pub enum SampleRate {

@@ -1,9 +1,9 @@
+use std::fmt::{self, Display, Formatter};
 use std::io::{self, Read, Write};
-use std::time::{Duration, SystemTime};
-use std::fmt::{self, Formatter, Display};
 use std::ops::Sub;
+use std::time::{Duration, SystemTime};
 
-use byteorder::{BE, ReadBytesExt, WriteBytesExt};
+use byteorder::{ReadBytesExt, WriteBytesExt, BE};
 
 use crate::frames::Frames;
 use crate::sample_rate::SampleRate;

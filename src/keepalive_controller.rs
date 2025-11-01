@@ -1,9 +1,9 @@
 use crate::rtsp_client::RTSPClient;
 
-use std::sync::{Arc};
+use std::sync::Arc;
 use std::time::Duration;
 
-use futures::future::{Abortable, AbortHandle};
+use futures::future::{AbortHandle, Abortable};
 use futures::prelude::*;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
@@ -18,7 +18,7 @@ impl KeepaliveController {
     pub fn start(rtsp_client: Arc<Mutex<RTSPClient>>) -> KeepaliveController {
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
 
-        let future = run(rtsp_client).map(|result| { result.unwrap(); });
+        let future = run(rtsp_client).map(Result::unwrap);
         let future = Abortable::new(future, abort_registration).map(|_| {});
 
         tokio::spawn(future);

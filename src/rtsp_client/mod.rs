@@ -1,15 +1,18 @@
 use std::io::Write;
 use std::net::IpAddr;
 
-use aes::{Aes128, cipher::{KeyIvInit, StreamCipher}};
+use aes::{
+    cipher::{KeyIvInit, StreamCipher},
+    Aes128,
+};
 use ctr::Ctr128BE;
-use ed25519_dalek::{SecretKey, SigningKey, PUBLIC_KEY_LENGTH, Signer, Signature};
+use ed25519_dalek::{SecretKey, Signature, Signer, SigningKey, PUBLIC_KEY_LENGTH};
 use hex::FromHex;
-use log::{error, debug};
-use sha2::{Sha512, Digest};
+use log::{debug, error};
+use sha2::{Digest, Sha512};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, ToSocketAddrs};
-use x25519_dalek::{StaticSecret, PublicKey};
+use x25519_dalek::{PublicKey, StaticSecret};
 
 use crate::frames::Frames;
 use crate::meta_data::MetaDataItem;
@@ -60,7 +63,7 @@ impl RequestBuilder {
                 debug!("----> ({} bytes binary data)", content.len());
             }
 
-            Body::None => {},
+            Body::None => {}
         }
 
         self.0
@@ -115,8 +118,21 @@ impl RTSPClient {
         buf.extend_from_slice(verify_pub.as_bytes());
         buf.extend_from_slice(auth_priv.verifying_key().as_bytes());
 
-        let (_, content) = self.exec_request("POST", Body::Blob { content_type: "application/octet-stream", content: &buf }, vec!(), Some("/pair-verify")).await
-            .map_err(|err| { error!("AppleTV verify step 1 failed (pair again)"); err })?;
+        let (_, content) = self
+            .exec_request(
+                "POST",
+                Body::Blob {
+                    content_type: "application/octet-stream",
+                    content: &buf,
+                },
+                vec![],
+                Some("/pair-verify"),
+            )
+            .await
+            .map_err(|err| {
+                error!("AppleTV verify step 1 failed (pair again)");
+                err
+            })?;
 
         drop(buf);
 
@@ -173,9 +189,21 @@ impl RTSPClient {
         buf[3] = 0;
 
         // ...and send this in the body of an HTTP POST request
-        self.exec_request("POST", Body::Blob { content_type: "application/octet-stream", content: &buf }, vec!(), Some("/pair-verify")).await
-            .map_err(|err| { error!("AppleTV verify step 2 failed (pair again)"); err })
-            .map(|_| ())
+        self.exec_request(
+            "POST",
+            Body::Blob {
+                content_type: "application/octet-stream",
+                content: &buf,
+            },
+            vec![],
+            Some("/pair-verify"),
+        )
+        .await
+        .map_err(|err| {
+            error!("AppleTV verify step 2 failed (pair again)");
+            err
+        })
+        .map(|_| ())
     }
 
     pub async fn auth_setup(&mut self) -> Result<(), RtspError> {
@@ -186,18 +214,40 @@ impl RTSPClient {
         buf.push(0x01);
         buf.extend_from_slice(pub_key.as_bytes());
 
-        self.exec_request("POST", Body::Blob { content_type: "application/octet-stream", content: &buf }, vec!(), Some("/auth-setup")).await
-            .map_err(|err| { error!("auth-setup failed"); err })
-            .map(|_| ())
+        self.exec_request(
+            "POST",
+            Body::Blob {
+                content_type: "application/octet-stream",
+                content: &buf,
+            },
+            vec![],
+            Some("/auth-setup"),
+        )
+        .await
+        .map_err(|err| {
+            error!("auth-setup failed");
+            err
+        })
+        .map(|_| ())
     }
 
     pub async fn announce_sdp(&mut self, sdp: &str) -> Result<(), RtspError> {
-        self.exec_request("ANNOUNCE", Body::Text { content_type: "application/sdp", content: sdp }, vec!(), None).await.map(|_| ())
+        self.exec_request(
+            "ANNOUNCE",
+            Body::Text {
+                content_type: "application/sdp",
+                content: sdp,
+            },
+            vec![],
+            None,
+        )
+        .await
+        .map(|_| ())
     }
 
     pub async fn setup(&mut self, control_port: u16, timing_port: u16) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
         let transport = format!("RTP/AVP/UDP;unicast;interleaved=0-1;mode=record;control_port={};timing_port={}", control_port, timing_port);
-        let (headers, _) = self.exec_request("SETUP", Body::None, vec!(("Transport", &transport)), None).await?;
+        let (headers, _) = self.exec_request("SETUP", Body::None, vec![("Transport", &transport)], None).await?;
         let session = headers.iter().find(|header| header.0.to_lowercase() == "session").map(|header| header.1.as_str());
 
         if let Some(session) = session {
@@ -218,29 +268,42 @@ impl RTSPClient {
         }
 
         let info = format!("seq={};rtptime={}", start_seq, start_ts);
-        let headers = vec!(("Range", "npt=0-"), ("RTP-Info", &info));
+        let headers = vec![("Range", "npt=0-"), ("RTP-Info", &info)];
 
         self.exec_request("RECORD", Body::None, headers, None).await.map(|result| result.0)
     }
 
     pub async fn set_parameter(&mut self, param: &str) -> Result<(), RtspError> {
-        self.exec_request("SET_PARAMETER", Body::Text { content_type: "text/parameters", content: param }, vec!(), None).await.map(|_| ())
+        self.exec_request(
+            "SET_PARAMETER",
+            Body::Text {
+                content_type: "text/parameters",
+                content: param,
+            },
+            vec![],
+            None,
+        )
+        .await
+        .map(|_| ())
     }
 
     pub async fn set_meta_data(&mut self, timestamp: Frames, meta_data: MetaDataItem) -> Result<(), RtspError> {
         let rtptime = format!("rtptime={}", timestamp);
-        let body = Body::Blob { content_type: "application/x-dmap-tagged", content: &meta_data.as_bytes() };
+        let body = Body::Blob {
+            content_type: "application/x-dmap-tagged",
+            content: &meta_data.as_bytes(),
+        };
 
         self.exec_request("SET_PARAMETER", body, vec![("RTP-Info", &rtptime)], None).await.map(|_| ())
     }
 
     pub async fn flush(&mut self, seq_number: u16, timestamp: Frames) -> Result<(), RtspError> {
         let info = format!("seq={};rtptime={}", seq_number, timestamp);
-        self.exec_request("FLUSH", Body::None, vec!(("RTP-Info", &info)), None).await.map(|_| ())
+        self.exec_request("FLUSH", Body::None, vec![("RTP-Info", &info)], None).await.map(|_| ())
     }
 
     pub async fn teardown(&mut self) -> Result<(), RtspError> {
-        self.exec_request("TEARDOWN", Body::None, vec!(), None).await.map(|_| ())
+        self.exec_request("TEARDOWN", Body::None, vec![], None).await.map(|_| ())
     }
 
     // bool rtspcl_set_daap(struct rtspcl_s *p, u32_t timestamp, int count, va_list args);
@@ -302,12 +365,16 @@ impl RTSPClient {
             let mut line = String::new();
             self.socket.read_line(&mut line).await?;
 
-            if line.trim() == "" { break; }
+            if line.trim() == "" {
+                break;
+            }
             response.header(&line)?;
         }
 
         let mut data = vec![0u8; response.content_length()];
-        if !data.is_empty() { self.socket.read_exact(&mut data).await?; }
+        if !data.is_empty() {
+            self.socket.read_exact(&mut data).await?;
+        }
         response.body(data)
     }
 }

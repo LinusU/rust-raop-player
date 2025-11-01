@@ -4,12 +4,12 @@ use crate::serialization::{Deserializable, Serializable};
 
 use std::time::Duration;
 
-use futures::future::{Abortable, AbortHandle};
+use futures::future::{AbortHandle, Abortable};
 use futures::prelude::*;
 use tokio::net::UdpSocket;
 use tokio::time::sleep;
 
-use log::{error, debug};
+use log::{debug, error};
 
 pub struct TimingController {
     abort_handle: Option<AbortHandle>,
@@ -19,7 +19,7 @@ impl TimingController {
     pub fn start(socket: UdpSocket) -> TimingController {
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
 
-        let future = run(socket).map(|result| { result.unwrap(); });
+        let future = run(socket).map(Result::unwrap);
         let future = Abortable::new(future, abort_registration).map(|_| {});
 
         tokio::spawn(future);

@@ -1,5 +1,5 @@
 use crate::frames::Frames;
-use crate::raop_client::{MAX_BACKLOG, Sane, Status};
+use crate::raop_client::{Sane, Status, MAX_BACKLOG};
 use crate::rtp::{RtpAudioRetransmissionPacket, RtpLostPacket, RtpSyncPacket};
 use crate::sample_rate::SampleRate;
 use crate::serialization::{Deserializable, Serializable};
@@ -8,13 +8,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use beefeater::{AddAssign, Beefeater};
-use futures::future::{Abortable, AbortHandle, join};
+use futures::future::{join, AbortHandle, Abortable};
 use futures::prelude::*;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 
-use log::{error, warn, info, debug, trace};
+use log::{debug, error, info, trace, warn};
 
 pub struct SyncController {
     abort_handle: Option<AbortHandle>,
@@ -29,12 +29,22 @@ impl SyncController {
         let receiving = receive(Arc::clone(&socket), Arc::clone(&status_mutex), sane_mutex, retransmit);
         let sending = send_sync_every_second(Arc::clone(&socket), status_mutex, latency, sample_rate);
 
-        let pair = join(receiving.map(|result| { result.unwrap(); }), sending.map(|result| { result.unwrap(); }));
+        let pair = join(
+            receiving.map(|result| {
+                result.unwrap();
+            }),
+            sending.map(|result| {
+                result.unwrap();
+            }),
+        );
         let future = Abortable::new(pair, abort_registration).map(|_| {});
 
         tokio::spawn(future);
 
-        SyncController { abort_handle: Some(abort_handle), socket }
+        SyncController {
+            abort_handle: Some(abort_handle),
+            socket,
+        }
     }
 
     pub fn stop(&mut self) {
@@ -52,7 +62,9 @@ async fn send_sync_paket(socket: Arc<UdpSocket>, rsp: RtpSyncPacket) -> Result<(
     let n = socket.send(&rsp.as_bytes()).await?;
 
     debug!("sync ntp:{} (ts:{})", rsp.curr_time, rsp.rtp_timestamp);
-    if n == 0 { info!("write, disconnected on the other end"); }
+    if n == 0 {
+        info!("write, disconnected on the other end");
+    }
 
     Ok(())
 }

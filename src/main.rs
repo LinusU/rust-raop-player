@@ -11,7 +11,7 @@ use std::time::Duration;
 
 // General dependencies
 use beefeater::{AddAssign, Beefeater};
-use futures::future::{Abortable, AbortHandle};
+use futures::future::{AbortHandle, Abortable};
 use futures::FutureExt;
 use log::{debug, info, warn};
 use tokio::fs::File;
@@ -19,7 +19,7 @@ use tokio::io::AsyncReadExt;
 use tokio::time::sleep;
 
 // Local dependencies
-use raop_play::{Codec, Crypto, Frames, MetaDataItem, NtpTime, RaopClient, MAX_SAMPLES_PER_CHUNK, RaopParams, SampleRate, Volume};
+use raop_play::{Codec, Crypto, Frames, MetaDataItem, NtpTime, RaopClient, RaopParams, SampleRate, Volume, MAX_SAMPLES_PER_CHUNK};
 
 const USAGE: &str = "
 Usage:
@@ -77,7 +77,12 @@ impl StatusLogger {
             let frames = frames.load();
 
             if frames > latency {
-                debug!("at {} ({} ms after start), played {} ms", now, (now - start).as_millis(), ((frames - latency) / sample_rate).as_millis());
+                debug!(
+                    "at {} ({} ms after start), played {} ms",
+                    now,
+                    (now - start).as_millis(),
+                    ((frames - latency) / sample_rate).as_millis()
+                );
             }
 
             sleep(Duration::from_secs(1)).await;
@@ -97,11 +102,13 @@ async fn open_file(name: String) -> std::io::Result<File> {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Args = Docopt::new(USAGE)
-        .and_then(|d| d.deserialize())
-        .unwrap_or_else(|e| e.exit());
+    let args: Args = Docopt::new(USAGE).and_then(|d| d.deserialize()).unwrap_or_else(|e| e.exit());
 
-    stderrlog::new().verbosity(args.flag_d).timestamp(stderrlog::Timestamp::Microsecond).color(stderrlog::ColorChoice::Never).init()?;
+    stderrlog::new()
+        .verbosity(args.flag_d)
+        .timestamp(stderrlog::Timestamp::Microsecond)
+        .color(stderrlog::ColorChoice::Never)
+        .init()?;
 
     let mut params = RaopParams::new();
 
@@ -120,11 +127,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let latency = raopcl.latency();
 
-    info!("connected to {} on port {}, player latency is {} ms", args.arg_server_ip, args.flag_p, (latency / raopcl.sample_rate()).as_millis());
+    info!(
+        "connected to {} on port {}, player latency is {} ms",
+        args.arg_server_ip,
+        args.flag_p,
+        (latency / raopcl.sample_rate()).as_millis()
+    );
 
-    let meta_data = MetaDataItem::listing_item(vec![
-        MetaDataItem::item_kind(2),
-    ]);
+    let meta_data = MetaDataItem::listing_item(vec![MetaDataItem::item_kind(2)]);
 
     if let Err(err) = raopcl.set_meta_data(meta_data).await {
         warn!("Failed to set meta data: {}", err);
@@ -149,7 +159,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     while let Status::Playing = status.load() {
         let n = infile.read(&mut buf).await?;
-        if n == 0 { break }
+        if n == 0 {
+            break;
+        }
         raopcl.accept_frames().await?;
         raopcl.send_chunk(&buf[0..n]).await?;
         frames.add_assign(Frames::from_usize(n, 4));

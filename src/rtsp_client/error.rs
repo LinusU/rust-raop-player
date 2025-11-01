@@ -1,5 +1,5 @@
 use std::error::Error;
-use std::fmt::{self, Formatter, Display};
+use std::fmt::{self, Display, Formatter};
 use std::string::FromUtf8Error;
 
 use hex::FromHexError;

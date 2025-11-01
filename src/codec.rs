@@ -1,5 +1,5 @@
 use std::convert::TryInto;
-use std::fmt::{self, Formatter, Display};
+use std::fmt::{self, Display, Formatter};
 
 use alac_encoder::{AlacEncoder, FormatDescription};
 
@@ -8,7 +8,12 @@ use crate::sample_rate::SampleRate;
 
 pub enum Codec {
     ALAC(Box<AlacEncoder>, FormatDescription),
-    PCM { chunk_length: Frames, sample_rate: SampleRate, sample_size: u32, channels: u8 },
+    PCM {
+        chunk_length: Frames,
+        sample_rate: SampleRate,
+        sample_size: u32,
+        channels: u8,
+    },
 }
 
 impl Codec {
@@ -19,7 +24,12 @@ impl Codec {
             let output_format = FormatDescription::alac(u64::from(sample_rate) as f64, u64::from(chunk_length) as u32, channels as u32);
             Codec::ALAC(Box::new(AlacEncoder::new(&output_format)), input_format)
         } else {
-            Codec::PCM { chunk_length, sample_rate, sample_size, channels }
+            Codec::PCM {
+                chunk_length,
+                sample_rate,
+                sample_size,
+                channels,
+            }
         }
     }
 
@@ -61,15 +71,12 @@ impl Codec {
                     encoder.channels(),
                     encoder.sample_rate(),
                 )
-            },
-            Codec::PCM { sample_rate, sample_size, channels, .. } => {
-                format!(
-                    "m=audio 0 RTP/AVP 96\r\na=rtpmap:96 L{}/{}/{}\r\n",
-                    sample_size,
-                    sample_rate,
-                    channels,
-                )
-            },
+            }
+            Codec::PCM {
+                sample_rate, sample_size, channels, ..
+            } => {
+                format!("m=audio 0 RTP/AVP 96\r\na=rtpmap:96 L{}/{}/{}\r\n", sample_size, sample_rate, channels,)
+            }
         }
     }
 
@@ -83,7 +90,7 @@ impl Codec {
                 encoded.truncate(size);
 
                 encoded
-            },
+            }
             Codec::PCM { .. } => {
                 let size = sample.len();
                 let mut encoded = vec![0; size];
@@ -96,7 +103,7 @@ impl Codec {
                 }
 
                 encoded
-            },
+            }
         }
     }
 }

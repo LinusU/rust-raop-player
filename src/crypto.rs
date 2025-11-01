@@ -39,7 +39,7 @@ impl Crypto {
                 let iv = base64::encode_config(iv, base64::STANDARD_NO_PAD);
 
                 format!("a=rsaaeskey:{}\r\na=aesiv:{}\r\n", rsakey, iv)
-            },
+            }
         }
     }
 
@@ -49,7 +49,7 @@ impl Crypto {
             Crypto::AES { key, iv } => {
                 trace!("Encrypting {} bytes using AES 128-bit CBC", data.len());
                 Ok(Aes128CbcEnc::new(key.into(), iv.into()).encrypt_padded_vec_mut::<Pkcs7>(&data))
-            },
+            }
         }
     }
 }

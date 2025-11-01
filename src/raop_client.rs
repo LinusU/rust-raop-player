@@ -5,10 +5,10 @@ use crate::keepalive_controller::KeepaliveController;
 use crate::meta_data::MetaDataItem;
 use crate::ntp::NtpTime;
 use crate::raop_params::RaopParams;
-use crate::rtp::{RtpHeader, RtpAudioPacket};
+use crate::rtp::{RtpAudioPacket, RtpHeader};
 use crate::rtsp_client::RTSPClient;
 use crate::sample_rate::SampleRate;
-use crate::serialization::{Serializable};
+use crate::serialization::Serializable;
 use crate::sync_controller::SyncController;
 use crate::timing_controller::TimingController;
 use crate::volume::Volume;
@@ -18,8 +18,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use beefeater::Beefeater;
+use log::{debug, error, info, trace};
 use rand::random;
-use log::{error, info, debug, trace};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
@@ -47,7 +47,7 @@ pub fn analyse_setup(setup_headers: Vec<(String, String)>) -> Result<(u16, u16, 
             ["server_port", port] => audio_port = port.parse()?,
             ["control_port", port] => ctrl_port = port.parse()?,
             ["timing_port", port] => time_port = port.parse()?,
-            _ => {},
+            _ => {}
         }
     }
 
@@ -484,9 +484,17 @@ impl RaopClient {
         if playtime.as_secs() % 10 == 0 && playtime.subsec_millis() < 8 {
             let sane = self.sane.lock().await;
             let retransmit = self.retransmit.load();
-            debug!("check n:{} p:{} ts:{} sn:{} retr:{} avail:{} send:{} select:{}",
-                now.millis(), playtime.as_secs_f32(), status.head_ts, status.seq_number,
-                retransmit, sane.audio.avail, sane.audio.send, sane.audio.select);
+            debug!(
+                "check n:{} p:{} ts:{} sn:{} retr:{} avail:{} send:{} select:{}",
+                now.millis(),
+                playtime.as_secs_f32(),
+                status.head_ts,
+                status.seq_number,
+                retransmit,
+                sane.audio.avail,
+                sane.audio.send,
+                sane.audio.select
+            );
         }
 
         trace!("[send_chunk] - dropping status");
@@ -533,7 +541,9 @@ impl RaopClient {
         connect has returned in case of multi-threaded application
         */
         // FIXME: if self.rtp_ports.audio.fd == -1  { return Ok(false); }
-        if status.state != RaopState::Streaming { return Ok(false); }
+        if status.state != RaopState::Streaming {
+            return Ok(false);
+        }
 
         let n = {
             let socket = self.rtp_audio.lock().await;
