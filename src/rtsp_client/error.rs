@@ -12,10 +12,9 @@ pub enum RtspError {
     FromHexError(FromHexError),
     ParseResponseError(ParseResponseError),
     DecodeResponseError(FromUtf8Error),
-    OpenSslError(openssl::error::ErrorStack),
-    ClientError { status: u16, headers: Vec<(String, String)>, body: String },
-    ServerError { status: u16, headers: Vec<(String, String)>, body: String },
-    UnknownError { status: u16, headers: Vec<(String, String)>, body: String },
+    ClientError { status: u16, headers: Vec<(String, String)>, body: Vec<u8> },
+    ServerError { status: u16, headers: Vec<(String, String)>, body: Vec<u8> },
+    UnknownError { status: u16, headers: Vec<(String, String)>, body: Vec<u8> },
 }
 
 impl Display for RtspError {
@@ -45,12 +44,6 @@ impl From<FromHexError> for RtspError {
 impl From<FromUtf8Error> for RtspError {
     fn from(error: FromUtf8Error) -> Self {
         RtspError::DecodeResponseError(error)
-    }
-}
-
-impl From<openssl::error::ErrorStack> for RtspError {
-    fn from(error: openssl::error::ErrorStack) -> Self {
-        RtspError::OpenSslError(error)
     }
 }
 
