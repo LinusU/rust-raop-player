@@ -522,8 +522,8 @@ impl RaopClient {
     }
 
     pub async fn set_meta_data(&self, meta_data: MetaDataItem) -> Result<(), Box<dyn std::error::Error>> {
-        let ts = (*self.status.lock().await).head_ts;
-        (*self.rtsp_client.lock().await).set_meta_data(ts, meta_data).await?;
+        let ts = self.status.lock().await.head_ts;
+        self.rtsp_client.lock().await.set_meta_data(ts, meta_data).await?;
         Ok(())
     }
 
