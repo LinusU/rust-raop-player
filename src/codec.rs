@@ -77,18 +77,16 @@ impl Codec {
         match self {
             Codec::ALAC(ref mut encoder, input_format) => {
                 let max_size = sample.len() + input_format.max_packet_size();
-                let mut encoded = Vec::with_capacity(max_size);
+                let mut encoded = vec![0; max_size];
 
-                unsafe { encoded.set_len(max_size); }
                 let size = encoder.encode(input_format, sample, &mut encoded);
-                unsafe { encoded.set_len(size); }
+                encoded.truncate(size);
 
                 encoded
             },
             Codec::PCM { .. } => {
                 let size = sample.len();
-                let mut encoded = Vec::with_capacity(size);
-                unsafe { encoded.set_len(size); }
+                let mut encoded = vec![0; size];
 
                 for offset in (0..size).step_by(4) {
                     encoded[offset] = sample[offset + 1];
