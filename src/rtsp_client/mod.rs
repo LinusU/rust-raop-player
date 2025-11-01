@@ -259,7 +259,7 @@ impl RTSPClient {
     }
 
     async fn exec_request(&mut self, cmd: &str, body: Body<'_>, headers: Vec<(&str, &str)>, url: Option<&str>) -> Result<Response, RtspError> {
-        let url = url.unwrap_or_else(|| self.url.as_str());
+        let url = url.unwrap_or(self.url.as_str());
         let mut req = RequestBuilder::new(cmd, url);
 
         for (key, value) in &headers {
