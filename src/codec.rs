@@ -82,7 +82,7 @@ impl Codec {
 
     pub fn encode_chunk(&mut self, sample: &[u8]) -> Vec<u8> {
         match self {
-            Codec::ALAC(ref mut encoder, input_format) => {
+            Codec::ALAC(encoder, input_format) => {
                 let max_size = sample.len() + input_format.max_packet_size();
                 let mut encoded = vec![0; max_size];
 

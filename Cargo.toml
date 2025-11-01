@@ -2,8 +2,8 @@
 name = "raop_play"
 version = "0.0.0"
 authors = ["Linus Unnebäck <linus@folkdatorn.se>"]
-edition = "2021"
-rust-version = "1.56"
+edition = "2024"
+rust-version = "1.85"
 
 [dependencies]
 aes = { version = "0.8.4", default-features = false }
