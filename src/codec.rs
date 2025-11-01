@@ -1,7 +1,7 @@
 use std::convert::TryInto;
 use std::fmt::{self, Formatter, Display};
 
-use alac_encoder::{AlacEncoder, FormatDescription, MAX_ESCAPE_HEADER_BYTES};
+use alac_encoder::{AlacEncoder, FormatDescription};
 
 use crate::frames::Frames;
 use crate::sample_rate::SampleRate;
@@ -76,7 +76,7 @@ impl Codec {
     pub fn encode_chunk(&mut self, sample: &[u8]) -> Vec<u8> {
         match self {
             Codec::ALAC(ref mut encoder, input_format) => {
-                let max_size = sample.len() + MAX_ESCAPE_HEADER_BYTES;
+                let max_size = sample.len() + input_format.max_packet_size();
                 let mut encoded = Vec::with_capacity(max_size);
 
                 unsafe { encoded.set_len(max_size); }

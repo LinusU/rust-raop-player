@@ -15,11 +15,11 @@ dependencies = [
 
 [[package]]
 name = "alac-encoder"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f28e404013b3e5ef90844323f5e8c1391cd4fa4e5dbcca9e5ff3ff2d14d4ace"
+checksum = "0a32a4e6eec2ede679898711c25120685f4cd472be57be0b98642312232b9f29"
 dependencies = [
- "byteorder",
+ "log",
 ]
 
 [[package]]
