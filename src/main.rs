@@ -11,11 +11,9 @@ use std::time::Duration;
 
 // General dependencies
 use beefeater::{AddAssign, Beefeater};
-use ctrlc;
 use futures::future::{Abortable, AbortHandle};
 use futures::FutureExt;
 use log::{debug, info, warn};
-use stderrlog;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::time::sleep;
