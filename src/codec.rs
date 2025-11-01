@@ -90,7 +90,7 @@ impl Codec {
                 let mut encoded = Vec::with_capacity(size);
                 unsafe { encoded.set_len(size); }
 
-                for offset in (0..(size as usize)).step_by(4) {
+                for offset in (0..size).step_by(4) {
                     encoded[offset] = sample[offset + 1];
                     encoded[offset + 1] = sample[offset];
                     encoded[offset + 2] = sample[offset + 3];
