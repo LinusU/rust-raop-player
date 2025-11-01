@@ -1,5 +1,4 @@
 use aes::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
-use base64;
 use log::trace;
 use num_bigint_dig::BigUint;
 use rand::random;
