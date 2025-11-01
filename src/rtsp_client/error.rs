@@ -8,13 +8,13 @@ use super::response::ParseResponseError;
 
 #[derive(Debug)]
 pub enum RtspError {
-    IoError(std::io::Error),
-    FromHexError(FromHexError),
-    ParseResponseError(ParseResponseError),
-    DecodeResponseError(FromUtf8Error),
-    ClientError { status: u16, headers: Vec<(String, String)>, body: Vec<u8> },
-    ServerError { status: u16, headers: Vec<(String, String)>, body: Vec<u8> },
-    UnknownError { status: u16, headers: Vec<(String, String)>, body: Vec<u8> },
+    Io(std::io::Error),
+    FromHex(FromHexError),
+    ParseResponse(ParseResponseError),
+    DecodeResponse(FromUtf8Error),
+    Client { status: u16, headers: Vec<(String, String)>, body: Vec<u8> },
+    Server { status: u16, headers: Vec<(String, String)>, body: Vec<u8> },
+    Unknown { status: u16, headers: Vec<(String, String)>, body: Vec<u8> },
 }
 
 impl Display for RtspError {
@@ -26,10 +26,10 @@ impl Display for RtspError {
 impl Error for RtspError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            RtspError::IoError(source) => Some(source),
-            RtspError::FromHexError(source) => Some(source),
-            RtspError::ParseResponseError(source) => Some(source),
-            RtspError::DecodeResponseError(source) => Some(source),
+            RtspError::Io(source) => Some(source),
+            RtspError::FromHex(source) => Some(source),
+            RtspError::ParseResponse(source) => Some(source),
+            RtspError::DecodeResponse(source) => Some(source),
             _ => None,
         }
     }
@@ -37,24 +37,24 @@ impl Error for RtspError {
 
 impl From<FromHexError> for RtspError {
     fn from(error: FromHexError) -> Self {
-        RtspError::FromHexError(error)
+        RtspError::FromHex(error)
     }
 }
 
 impl From<FromUtf8Error> for RtspError {
     fn from(error: FromUtf8Error) -> Self {
-        RtspError::DecodeResponseError(error)
+        RtspError::DecodeResponse(error)
     }
 }
 
 impl From<ParseResponseError> for RtspError {
     fn from(error: ParseResponseError) -> Self {
-        RtspError::ParseResponseError(error)
+        RtspError::ParseResponse(error)
     }
 }
 
 impl From<std::io::Error> for RtspError {
     fn from(error: std::io::Error) -> Self {
-        RtspError::IoError(error)
+        RtspError::Io(error)
     }
 }

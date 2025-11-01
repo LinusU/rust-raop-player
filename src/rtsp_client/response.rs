@@ -86,9 +86,9 @@ impl ResponseBuilder {
 
         match self.status {
             200..=299 => Ok((self.headers, body)),
-            400..=499 => Err(RtspError::ClientError { status: self.status, headers: self.headers, body }),
-            500..=599 => Err(RtspError::ServerError { status: self.status, headers: self.headers, body }),
-            _ => Err(RtspError::UnknownError { status: self.status, headers: self.headers, body })
+            400..=499 => Err(RtspError::Client { status: self.status, headers: self.headers, body }),
+            500..=599 => Err(RtspError::Server { status: self.status, headers: self.headers, body }),
+            _ => Err(RtspError::Unknown { status: self.status, headers: self.headers, body })
         }
     }
 }
