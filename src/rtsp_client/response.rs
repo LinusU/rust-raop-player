@@ -10,6 +10,7 @@ use super::RtspError;
 pub type Response = (Vec<(String, String)>, Vec<u8>);
 
 #[derive(Debug)]
+#[allow(clippy::enum_variant_names)]
 pub enum ParseResponseError {
     InvalidStatusLine,
     InvalidStatusCode(ParseIntError),

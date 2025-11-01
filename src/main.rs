@@ -147,19 +147,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let status_logger = StatusLogger::start(start, Arc::clone(&frames), raopcl.latency(), raopcl.sample_rate());
 
-    loop {
-        match status.load() {
-            Status::Playing => {
-                let n = infile.read(&mut buf).await?;
-                if n == 0 { break }
-                raopcl.accept_frames().await?;
-                raopcl.send_chunk(&buf[0..n]).await?;
-                frames.add_assign(Frames::from_usize(n, 4));
-            }
-            Status::Stopped => {
-                break;
-            }
-        }
+    while let Status::Playing = status.load() {
+        let n = infile.read(&mut buf).await?;
+        if n == 0 { break }
+        raopcl.accept_frames().await?;
+        raopcl.send_chunk(&buf[0..n]).await?;
+        frames.add_assign(Frames::from_usize(n, 4));
     }
 
     status_logger.stop();
