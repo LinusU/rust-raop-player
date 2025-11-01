@@ -48,14 +48,14 @@ impl RequestBuilder {
         debug!("----> ");
 
         match value {
-            Body::Text { ref content, .. } => {
+            Body::Text { content, .. } => {
                 write!(&mut self.0, "{}", content).unwrap();
                 for line in content.lines() {
                     debug!("----> {}", line);
                 }
             }
 
-            Body::Blob { ref content, .. } => {
+            Body::Blob { content, .. } => {
                 self.0.extend_from_slice(content);
                 debug!("----> ({} bytes binary data)", content.len());
             }
@@ -266,12 +266,12 @@ impl RTSPClient {
             req.header(key, value);
         }
 
-        if let Body::Text { ref content_type, ref content } = body {
+        if let Body::Text { content_type, content } = body {
             req.header("Content-Type", content_type);
             req.header("Content-Length", &content.len().to_string());
         }
 
-        if let Body::Blob { ref content_type, ref content } = body {
+        if let Body::Blob { content_type, content } = body {
             req.header("Content-Type", content_type);
             req.header("Content-Length", &content.len().to_string());
         }

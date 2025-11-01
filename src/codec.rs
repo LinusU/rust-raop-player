@@ -25,35 +25,35 @@ impl Codec {
 
     pub fn chunk_length(&self) -> Frames {
         match self {
-            Codec::ALAC(ref encoder, _) => (encoder.frames() as u64).into(),
+            Codec::ALAC(encoder, _) => (encoder.frames() as u64).into(),
             Codec::PCM { chunk_length, .. } => *chunk_length,
         }
     }
 
     pub fn sample_rate(&self) -> SampleRate {
         match self {
-            Codec::ALAC(ref encoder, _) => (encoder.sample_rate() as u64).try_into().unwrap(),
+            Codec::ALAC(encoder, _) => (encoder.sample_rate() as u64).try_into().unwrap(),
             Codec::PCM { sample_rate, .. } => *sample_rate,
         }
     }
 
     pub fn sample_size(&self) -> u32 {
         match self {
-            Codec::ALAC(ref encoder, _) => encoder.bit_depth() as u32,
+            Codec::ALAC(encoder, _) => encoder.bit_depth() as u32,
             Codec::PCM { sample_size, .. } => *sample_size,
         }
     }
 
     pub fn channels(&self) -> u8 {
         match self {
-            Codec::ALAC(ref encoder, _) => encoder.channels() as u8,
+            Codec::ALAC(encoder, _) => encoder.channels() as u8,
             Codec::PCM { channels, .. } => *channels,
         }
     }
 
     pub fn sdp(&self) -> String {
         match self {
-            Codec::ALAC(ref encoder, _) => {
+            Codec::ALAC(encoder, _) => {
                 format!(
                     "m=audio 0 RTP/AVP 96\r\na=rtpmap:96 AppleLossless\r\na=fmtp:96 {} 0 {} 40 10 14 {} 255 0 0 {}\r\n",
                     encoder.frames(),
@@ -75,7 +75,7 @@ impl Codec {
 
     pub fn encode_chunk(&mut self, sample: &[u8]) -> Vec<u8> {
         match self {
-            Codec::ALAC(ref mut encoder, ref input_format) => {
+            Codec::ALAC(ref mut encoder, input_format) => {
                 let max_size = sample.len() + MAX_ESCAPE_HEADER_BYTES;
                 let mut encoded = Vec::with_capacity(max_size);
 
