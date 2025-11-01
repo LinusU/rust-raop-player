@@ -43,12 +43,12 @@ impl Crypto {
         }
     }
 
-    pub fn encrypt(&self, mut data: Vec<u8>) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    pub fn encrypt(&self, data: Vec<u8>) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         match self {
             Crypto::Clear => Ok(data),
             Crypto::AES { key, iv } => {
                 trace!("Encrypting {} bytes using AES 128-bit CBC", data.len());
-                Ok(Aes128CbcEnc::new(key.into(), iv.into()).encrypt_padded_vec_mut::<Pkcs7>(&mut data))
+                Ok(Aes128CbcEnc::new(key.into(), iv.into()).encrypt_padded_vec_mut::<Pkcs7>(&data))
             },
         }
     }
