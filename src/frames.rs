@@ -10,8 +10,8 @@ use crate::sample_rate::SampleRate;
 pub struct Frames(u64);
 
 fn scale(value: u64, max: u64) -> u32 {
-    assert!(max < (std::u32::MAX as u64));
-    (value * (std::u32::MAX as u64) / max) as u32
+    assert!(max < (u32::MAX as u64));
+    (value * (u32::MAX as u64) / max) as u32
 }
 
 impl Frames {

@@ -60,12 +60,12 @@ impl Sub for NtpTime {
         }
 
         let (secs, fraction) = if self.fraction < other.fraction {
-            (self.seconds - other.seconds - 1, std::u32::MAX - other.fraction + self.fraction)
+            (self.seconds - other.seconds - 1, u32::MAX - other.fraction + self.fraction)
         } else {
             (self.seconds - other.seconds, self.fraction - other.fraction)
         };
 
-        let nanos = ((fraction as f64) / (std::u32::MAX as f64)) * 1_000_000_000f64;
+        let nanos = ((fraction as f64) / (u32::MAX as f64)) * 1_000_000_000f64;
 
         Duration::new(secs as u64, nanos as u32)
     }
