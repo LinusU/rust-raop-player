@@ -105,7 +105,7 @@ pub struct RtpAudioRetransmissionPacket<'a> {
 }
 
 impl<'a> RtpAudioRetransmissionPacket<'a> {
-    pub fn wrap(packet: &RtpAudioPacket) -> RtpAudioRetransmissionPacket {
+    pub fn wrap(packet: &RtpAudioPacket) -> RtpAudioRetransmissionPacket<'_> {
         RtpAudioRetransmissionPacket { packet }
     }
 }
