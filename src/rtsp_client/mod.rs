@@ -308,6 +308,6 @@ impl RTSPClient {
 
         let mut data = vec![0u8; response.content_length()];
         if !data.is_empty() { self.socket.read_exact(&mut data).await?; }
-        Ok(response.body(data)?)
+        response.body(data)
     }
 }
