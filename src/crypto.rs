@@ -22,10 +22,7 @@ impl Crypto {
     }
 
     pub fn is_clear(&self) -> bool {
-        match self {
-            Crypto::Clear => true,
-            _ => false,
-        }
+        matches!(self, Crypto::Clear)
     }
 
     pub fn sdp(&self) -> String {
