@@ -341,7 +341,7 @@ impl RaopClient {
         self.codec.sample_rate()
     }
 
-    async fn flush(&self, mut status: &mut Status) -> Result<(), Box<dyn std::error::Error>> {
+    async fn flush(&self, status: &mut Status) -> Result<(), Box<dyn std::error::Error>> {
         let now = NtpTime::now();
         let now_ts = now.into_timestamp(self.codec.sample_rate());
 
@@ -358,7 +358,7 @@ impl RaopClient {
             status.head_ts = if status.start_ts > Frames::new(0) { status.start_ts } else { now_ts };
             status.first_ts = status.head_ts;
 
-            self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), self.latency, true).await?;
+            self.sync_controller.send_sync(status, self.codec.sample_rate(), self.latency, true).await?;
 
             info!("restarting w/o pause n:{}, hts:{}", now, status.head_ts);
         } else {
@@ -372,7 +372,7 @@ impl RaopClient {
             // last head_ts shall be first + raopcl_latency - chunk_length
             status.head_ts = status.first_ts - self.codec.chunk_length();
 
-            self.sync_controller.send_sync(&mut status, self.codec.sample_rate(), self.latency, true).await?;
+            self.sync_controller.send_sync(status, self.codec.sample_rate(), self.latency, true).await?;
 
             info!("restarting w/ pause n:{}, hts:{} (re-send: {})", now, status.head_ts, chunks);
 
@@ -400,7 +400,7 @@ impl RaopClient {
                     entry.packet.timestamp = status.head_ts;
                     status.first_pkt = false;
 
-                    self._send_audio(&mut status, &entry.packet).await?;
+                    self._send_audio(status, &entry.packet).await?;
 
                     // then replace packets in backlog in case
                     let reindex = (status.seq_number % MAX_BACKLOG) as usize;
@@ -465,7 +465,7 @@ impl RaopClient {
         let mut status = self.status.lock().await;
         trace!("[send_chunk] - got status");
 
-        let encoded = self.codec.encode_chunk(&sample);
+        let encoded = self.codec.encode_chunk(sample);
         let encrypted = self.crypto.encrypt(encoded)?;
 
         let playtime = (status.head_ts + self.latency()) / self.codec.sample_rate();
