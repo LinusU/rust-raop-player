@@ -129,8 +129,8 @@ impl Sane {
 
 fn format_ip_for_sdp(ip: IpAddr) -> String {
     match ip {
-        IpAddr::V4(ip) => format!("IN IP4 {}", ip.to_string()),
-        IpAddr::V6(ip) => format!("IN IP6 {}", ip.to_string()),
+        IpAddr::V4(ip) => format!("IN IP4 {}", ip),
+        IpAddr::V6(ip) => format!("IN IP6 {}", ip),
     }
 }
 
